@@ -1,6 +1,6 @@
-import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2";
+import { pipeline, env, AutoModel, AutoProcessor, RawImage } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2";
 const $ = id => document.getElementById(id);
-const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,edgeCleanup:42,decontaminate:85,cleanedSource:null,remover:null,mattingRefiner:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
+const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,edgeCleanup:42,decontaminate:85,cleanedSource:null,remover:null,mattingModel:null,mattingProcessor:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
 const preview=$("previewCanvas"),brush=$("brushCanvas"),previewCtx=preview.getContext("2d",{willReadFrequently:true}),brushCtx=brush.getContext("2d"),toastEl=$("toast");
 function toast(message){toastEl.textContent=message;toastEl.classList.add("show");clearTimeout(toast._timer);toast._timer=setTimeout(()=>toastEl.classList.remove("show"),3200)}
 function setBusy(busy,label){state.busy=busy;$("removeButton").disabled=busy||!state.source;$("removeButton").textContent=busy?(label||"Memproses…"):"✦ Hapus background otomatis"}
@@ -50,36 +50,60 @@ async function refineHairMatting({automatic=false}={}){
   if(!state.source||!state.mask||state.busy)return;
   const button=$("hairMattingButton");
   setBusy(true,"Meningkatkan detail rambut…");button.disabled=true;
+  let imageUrl=null;
   try{
     setProgress(12,"Memuat model portrait matting…");
-    if(!state.mattingRefiner)state.mattingRefiner=await pipeline("background-removal","Xenova/modnet",{dtype:"fp32"});
-    setProgress(48,"AI sedang memperhalus rambut dan tepi…");
-    const scale=Math.min(1,1024/Math.max(state.width,state.height)),w=Math.max(1,Math.round(state.width*scale)),h=Math.max(1,Math.round(state.height*scale));
-    const input=createCanvas(w,h);input.getContext("2d").drawImage(state.source,0,0,w,h);
+    if(!state.mattingModel||!state.mattingProcessor){
+      [state.mattingModel,state.mattingProcessor]=await Promise.all([
+        AutoModel.from_pretrained("Xenova/modnet",{dtype:"fp32"}),
+        AutoProcessor.from_pretrained("Xenova/modnet")
+      ]);
+    }
+    setProgress(42,"Menganalisis helaian rambut dan tepi subjek…");
+    const scale=Math.min(1,1280/Math.max(state.width,state.height));
+    const w=Math.max(1,Math.round(state.width*scale)),h=Math.max(1,Math.round(state.height*scale));
+    const input=createCanvas(w,h);
+    input.getContext("2d").drawImage(state.source,0,0,w,h);
     const blob=await new Promise((resolve,reject)=>input.toBlob(v=>v?resolve(v):reject(new Error("Gagal menyiapkan foto untuk matting.")),"image/png"));
-    const output=await state.mattingRefiner(blob),matte=Array.isArray(output)?output[0]:output;
-    if(!matte||typeof matte.toCanvas!=="function")throw new Error("Model matting tidak menghasilkan mask yang valid.");
-    const matteCanvas=matte.toCanvas(),mc=matteCanvas.getContext("2d",{willReadFrequently:true});
-    const mattePixels=mc.getImageData(0,0,matteCanvas.width,matteCanvas.height).data;
+    imageUrl=URL.createObjectURL(blob);
+    const image=await RawImage.fromURL(imageUrl);
+    const {pixel_values}=await state.mattingProcessor(image);
+    const {output}=await state.mattingModel({input:pixel_values});
+    if(!output||!output[0])throw new Error("Model tidak menghasilkan alpha matte.");
+    const matte=await RawImage.fromTensor(output[0].mul(255).to("uint8")).resize(image.width,image.height);
+    if(!matte.data||!matte.width||!matte.height||!matte.channels)throw new Error("Alpha matte tidak valid.");
+    setProgress(78,"Menggabungkan matte rambut dengan deteksi subjek…");
     const refined=createCanvas(state.width,state.height),ctx=refined.getContext("2d");
-    const pixels=ctx.createImageData(state.width,state.height),base=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height).data,out=pixels.data,mix=.68;
-    // MODNet's RGBA result stores the portrait matte in alpha. RGB is source color,
-    // so reading RGB luminance here would produce an invalid transparency mask.
+    const pixels=ctx.createImageData(state.width,state.height),base=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height).data,out=pixels.data;
+    // Use MODNet's predicted alpha matte directly, not the RGB channels of a cutout.
+    // Keep ORMBG's stronger body/subject detection while recovering soft hair detail.
+    const mix=.72,channels=matte.channels;
     for(let y=0;y<state.height;y++){
+      const my=Math.min(matte.height-1,Math.floor(y*matte.height/state.height));
       for(let x=0,i=(y*state.width)*4;x<state.width;x++,i+=4){
-        const mx=Math.min(matteCanvas.width-1,Math.floor(x*matteCanvas.width/state.width));
-        const my=Math.min(matteCanvas.height-1,Math.floor(y*matteCanvas.height/state.height)),mi=(my*matteCanvas.width+mx)*4;
-        const modnetAlpha=mattePixels[mi+3];
+        const mx=Math.min(matte.width-1,Math.floor(x*matte.width/state.width));
+        const mi=(my*matte.width+mx)*channels;
+        let value=matte.data[mi];
+        if(channels>=3)value=(matte.data[mi]+matte.data[mi+1]+matte.data[mi+2])/3;
+        const modnetAlpha=Math.max(0,Math.min(255,value));
         out[i]=out[i+1]=out[i+2]=255;
         out[i+3]=Math.round(base[i+3]*(1-mix)+modnetAlpha*mix);
       }
     }
     ctx.putImageData(pixels,0,0);
-    ctx.putImageData(pixels,0,0);state.baseMask=refined;state.mask=createCanvas(state.width,state.height);
-    state.mask.getContext("2d").drawImage(refined,0,0);applyEdgeCleanup();decontaminateEdgeColors();render();
-    $("previewStatus").textContent="Detail rambut diperhalus otomatis";toast(automatic?"Penghapusan background dan perapian rambut otomatis selesai.":"Matting rambut selesai. Periksa detail sebelum ekspor.");
-  }catch(error){console.error(error);$("previewStatus").textContent="Background terhapus · perapian rambut dilewati";toast(automatic?"Background sudah terhapus. Perapian rambut otomatis dilewati; hasil awal tetap tersedia.":"Matting rambut tidak berhasil: "+(error.message||"coba lagi."))}
-  finally{finishProgress();setBusy(false);button.disabled=!state.mask;enableExports()}
+    state.baseMask=refined;state.mask=createCanvas(state.width,state.height);
+    state.mask.getContext("2d").drawImage(refined,0,0);
+    applyEdgeCleanup();decontaminateEdgeColors();render();
+    $("previewStatus").textContent="Matte rambut dan tepi diperhalus";
+    toast(automatic?"Penghapusan background dan perapian matte otomatis selesai.":"Perapian matte selesai. Periksa detail sebelum ekspor.");
+  }catch(error){
+    console.error(error);
+    $("previewStatus").textContent="Background terhapus · matting tambahan dilewati";
+    toast(automatic?"Background utama tetap tersedia. Perapian matte otomatis dilewati.":"Matting rambut tidak berhasil: "+(error.message||"coba lagi."));
+  }finally{
+    if(imageUrl)URL.revokeObjectURL(imageUrl);
+    finishProgress();setBusy(false);button.disabled=!state.mask;enableExports();
+  }
 }
 async function loadModel(){
   if(state.remover)return state.remover;
