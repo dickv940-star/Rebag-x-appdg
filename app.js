@@ -67,7 +67,7 @@ function decontaminateEdgeColors(){
         Math.max(0,Math.min(255,(src[i+1]-(1-a)*bg[1])/denom)),
         Math.max(0,Math.min(255,(src[i+2]-(1-a)*bg[2])/denom))
       ];
-      const sampleConfidence=Math.min(1,samples/6);
+      const sampleConfidence=Math.min(1,samples/3);
       const alphaConfidence=Math.min(1,Math.max(.22,(a-.07)/.28));
       const correction=Math.min(1,strength*sampleConfidence*alphaConfidence);
       src[i]=Math.round(src[i]+(foreground[0]-src[i])*correction);
