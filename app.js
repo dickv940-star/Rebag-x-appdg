@@ -13,7 +13,7 @@ function drawBackground(ctx){if(state.background==="transparent")return;if(state
 function render(){if(!state.source)return;previewCtx.clearRect(0,0,preview.width,preview.height);drawBackground(previewCtx);previewCtx.drawImage(buildSubjectCanvas(),0,0)}
 function showEditor(){if(!state.source)return;$("removeButton").disabled=state.busy;$("emptyState").hidden=true;preview.width=brush.width=state.width;preview.height=brush.height=state.height;preview.classList.add("visible");brush.classList.add("visible");brush.style.pointerEvents=state.mask?"auto":"none";brushCtx.clearRect(0,0,brush.width,brush.height);render();$("dimensions").textContent=state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent=state.mask?"Background terhapus":"Foto asli";$("zoomLabel").textContent="Rasio dan resolusi asli";$("resetMask").disabled=!state.mask;enableExports()}
 function enableExports(){["exportPng","exportJpg","exportPdf"].forEach(id=>$(id).disabled=!state.source||state.busy)}
-function applyEdgeCleanup(){if(!state.baseMask||!state.mask)return;const source=state.baseMask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height),target=state.mask.getContext("2d"),pixels=source.data,strength=state.edgeCleanup/100,cutoff=strength*.32,exponent=1+strength*1.1;for(let i=3;i<pixels.length;i+=4){const alpha=pixels[i]/255;if(alpha<=0){pixels[i]=0;continue}if(strength===0)continue;const normalized=Math.max(0,Math.min(1,(alpha-cutoff)/(1-cutoff)));pixels[i]=Math.round(Math.pow(normalized,exponent)*255)}target.putImageData(source,0,0)}
+function applyEdgeCleanup(){if(!state.baseMask||!state.mask)return;const source=state.baseMask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height),target=state.mask.getContext("2d"),pixels=source.data,strength=state.edgeCleanup/100,cutoff=strength*.08,exponent=1+strength*.38;for(let i=3;i<pixels.length;i+=4){const alpha=pixels[i]/255;if(alpha<=0){pixels[i]=0;continue}if(strength===0)continue;const normalized=Math.max(0,Math.min(1,(alpha-cutoff)/(1-cutoff)));pixels[i]=Math.round(Math.pow(normalized,exponent)*255)}target.putImageData(source,0,0)}
 function decontaminateEdgeColors(){
   if(!state.source||!state.mask)return;
   const width=state.width,height=state.height;
@@ -37,7 +37,7 @@ function decontaminateEdgeColors(){
         r+=src[ni];g+=src[ni+1];b+=src[ni+2];n++;
       }
       if(!n)continue;
-      const inv=1/n,correction=Math.min(1,strength*(1-a)*1.15),denom=Math.max(.2,a);
+      const inv=1/n,correction=Math.min(.78,strength*(1-a)*.9),denom=Math.max(.28,a);
       const rr=r*inv,gg=g*inv,bb=b*inv;
       src[i]=Math.max(0,Math.min(255,Math.round(src[i]+(((src[i]-(1-a)*rr)/denom)-src[i])*correction)));
       src[i+1]=Math.max(0,Math.min(255,Math.round(src[i+1]+(((src[i+1]-(1-a)*gg)/denom)-src[i+1])*correction)));
