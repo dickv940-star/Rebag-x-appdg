@@ -42,40 +42,43 @@ async function decontaminateEdgeColors(){
   const mask=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height);
   const src=image.data,alpha=mask.data,strength=state.decontaminate/100;
   if(strength<=0){state.cleanedSource=sourceCanvas;return}
-  // Estimate old background from nearby fully transparent pixels. Prefer the
-  // nearest radius with enough samples to avoid pulling in distant colors.
-  const rings=[2,4];
-  for(let y=11;y<height-11;y++){
+  // Sample the original background farther outside the silhouette. A wider
+  // multi-direction search is important for fine hair and colored edge spill.
+  const rings=[3,6,10,14],directions=16;
+  for(let y=14;y<height-14;y++){
     if((y&7)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
-    let i=(y*width+11)*4;
-    for(let x=11;x<width-11;x++,i+=4){
+    let i=(y*width+14)*4;
+    for(let x=14;x<width-14;x++,i+=4){
       const a=alpha[i+3]/255;
-      if(a<0.07||a>0.94)continue;
+      if(a<0.035||a>0.995)continue;
       let bgR=0,bgG=0,bgB=0,total=0,samples=0;
       for(const radius of rings){
         bgR=bgG=bgB=total=samples=0;
-        const directions=8;
         for(let step=0;step<directions;step++){
           const angle=(Math.PI*2*step)/directions;
           const dx=Math.round(Math.cos(angle)*radius),dy=Math.round(Math.sin(angle)*radius);
           const ni=i+(dy*width+dx)*4,na=alpha[ni+3]/255;
-          if(na>0.02)continue;
+          if(na>0.045)continue;
           const weight=1/(radius*radius);
           bgR+=src[ni]*weight;bgG+=src[ni+1]*weight;bgB+=src[ni+2]*weight;
           total+=weight;samples++;
         }
-        if(samples>=2)break;
+        if(samples>=3)break;
       }
-      if(samples<2||total===0)continue;
-      const inv=1/total,bg=[bgR*inv,bgG*inv,bgB*inv],denom=Math.max(0.16,a);
+      if(samples<3||total===0)continue;
+      const inv=1/total,bg=[bgR*inv,bgG*inv,bgB*inv];
+      // Un-composite the old background from the edge pixel. Use the actual
+      // matte alpha (with a small stability floor), not a large denominator
+      // that leaves the old background color visible in semi-transparent hair.
+      const denom=Math.max(0.085,a);
       const foreground=[
         Math.max(0,Math.min(255,(src[i]-(1-a)*bg[0])/denom)),
         Math.max(0,Math.min(255,(src[i+1]-(1-a)*bg[1])/denom)),
         Math.max(0,Math.min(255,(src[i+2]-(1-a)*bg[2])/denom))
       ];
-      const sampleConfidence=Math.min(1,samples/3);
-      const alphaConfidence=Math.min(1,Math.max(.22,(a-.07)/.28));
-      const correction=Math.min(1,strength*sampleConfidence*alphaConfidence);
+      const sampleConfidence=Math.min(1,samples/7);
+      const edgeConfidence=Math.min(1,Math.max(.35,(1-a)/.22));
+      const correction=Math.min(1,strength*sampleConfidence*edgeConfidence);
       src[i]=Math.round(src[i]+(foreground[0]-src[i])*correction);
       src[i+1]=Math.round(src[i+1]+(foreground[1]-src[i+1])*correction);
       src[i+2]=Math.round(src[i+2]+(foreground[2]-src[i+2])*correction);
