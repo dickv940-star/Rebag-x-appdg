@@ -8,3 +8,7 @@
 #colorPickerHandle{position:absolute;width:13px;height:13px;border:2px solid #fff;border-radius:50%;box-shadow:0 1px 5px #0008;transform:translate(-50%,-50%);pointer-events:none;left:100%;top:0}
 .hue-picker{height:13px;margin-top:9px;border-radius:20px;cursor:crosshair;touch-action:none;background:linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)}
 .live-color-picker>small{display:block;margin-top:8px;font-size:9px;line-height:1.45;color:#8a94a5}
+
+/* Non-destructive edge halo control */
+.edge-cleanup-row{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.edge-cleanup-row small{display:block;margin-top:7px;color:#8a94a5;font-size:9px;line-height:1.45}
