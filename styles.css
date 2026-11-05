@@ -12,3 +12,5 @@
 /* Non-destructive edge halo control */
 .edge-cleanup-row{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
 .edge-cleanup-row small{display:block;margin-top:7px;color:#8a94a5;font-size:9px;line-height:1.45}
+
+.edge-cleanup-row input{display:block;width:100%}
