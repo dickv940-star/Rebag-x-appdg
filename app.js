@@ -39,16 +39,16 @@ function decontaminateEdgeColors(){
   if(strength<=0){state.cleanedSource=sourceCanvas;return}
   // Estimate old background from nearby fully transparent pixels. Prefer the
   // nearest radius with enough samples to avoid pulling in distant colors.
-  const rings=[2,4,7,11];
+  const rings=[2,4];
   for(let y=11;y<height-11;y++){
     let i=(y*width+11)*4;
     for(let x=11;x<width-11;x++,i+=4){
       const a=alpha[i+3]/255;
-      if(a<0.07||a>0.999)continue;
+      if(a<0.07||a>0.94)continue;
       let bgR=0,bgG=0,bgB=0,total=0,samples=0;
       for(const radius of rings){
         bgR=bgG=bgB=total=samples=0;
-        const directions=16;
+        const directions=8;
         for(let step=0;step<directions;step++){
           const angle=(Math.PI*2*step)/directions;
           const dx=Math.round(Math.cos(angle)*radius),dy=Math.round(Math.sin(angle)*radius);
@@ -198,7 +198,7 @@ function paintStroke(point){if(!state.mask||!state.baseMask)return;const ctx=sta
 function onBrushDown(e){if(!state.mask)return;state.pointerDown=true;brush.setPointerCapture(e.pointerId);state.lastPoint=null;const p=getCanvasPoint(e);paintStroke(p);state.lastPoint=p;render()}
 function onBrushMove(e){if(!state.pointerDown)return;const p=getCanvasPoint(e);paintStroke(p);state.lastPoint=p;render()}
 function onBrushUp(){state.pointerDown=false;state.lastPoint=null;if(state.mask){decontaminateEdgeColors();render()}}
-async function loadMainPhoto(file){if(!file||!/^image\/(jpeg|png|webp)$/.test(file.type)){toast("Pilih foto JPG, PNG, atau WebP.");return}try{const loaded=await imageFromFile(file);if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.source=loaded.img;state.sourceUrl=loaded.url;state.width=loaded.img.naturalWidth;state.height=loaded.img.naturalHeight;state.fileName=(file.name||"rebag-photo").replace(/\.[^.]+$/,"").replace(/[^\w-]+/g,"-");state.mask=null;state.baseMask=null;state.cleanedSource=null;$("hairMattingButton").disabled=true;$("fileMeta").textContent=file.name+" • "+state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent="Foto siap diedit";showEditor();toast("Foto diunggah. AI menghapus background dan akan merapikan detail rambut otomatis…");await removeBackground({autoRefine:true})}catch(e){toast(e.message)}}
+async function loadMainPhoto(file){if(!file||!/^image\/(jpeg|png|webp)$/.test(file.type)){toast("Pilih foto JPG, PNG, atau WebP.");return}try{const loaded=await imageFromFile(file);if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.source=loaded.img;state.sourceUrl=loaded.url;state.width=loaded.img.naturalWidth;state.height=loaded.img.naturalHeight;state.fileName=(file.name||"rebag-photo").replace(/\.[^.]+$/,"").replace(/[^\w-]+/g,"-");state.mask=null;state.baseMask=null;state.cleanedSource=null;$("hairMattingButton").disabled=true;$("fileMeta").textContent=file.name+" • "+state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent="Foto siap diedit";showEditor();toast("Foto diunggah. AI menghapus background dan akan merapikan detail rambut otomatis…");await removeBackground({autoRefine:false})}catch(e){toast(e.message)}}
 $("photoInput").addEventListener("change",e=>loadMainPhoto(e.target.files[0]));
 $("dropzone").addEventListener("dragover",e=>{e.preventDefault();$("dropzone").classList.add("dragover")});
 $("dropzone").addEventListener("dragleave",()=>$("dropzone").classList.remove("dragover"));
