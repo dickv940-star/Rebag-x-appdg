@@ -13,7 +13,48 @@ function drawBackground(ctx){if(state.background==="transparent")return;if(state
 function render(){if(!state.source)return;previewCtx.clearRect(0,0,preview.width,preview.height);drawBackground(previewCtx);previewCtx.drawImage(buildSubjectCanvas(),0,0)}
 function showEditor(){if(!state.source)return;$("removeButton").disabled=state.busy;$("emptyState").hidden=true;preview.width=brush.width=state.width;preview.height=brush.height=state.height;preview.classList.add("visible");brush.classList.add("visible");brush.style.pointerEvents=state.mask?"auto":"none";brushCtx.clearRect(0,0,brush.width,brush.height);render();$("dimensions").textContent=state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent=state.mask?"Background terhapus":"Foto asli";$("zoomLabel").textContent="Rasio dan resolusi asli";$("resetMask").disabled=!state.mask;enableExports()}
 function enableExports(){["exportPng","exportJpg","exportPdf"].forEach(id=>$(id).disabled=!state.source||state.busy)}
-async function loadModel(){if(state.remover)return state.remover;if(state.modelLoading)throw new Error("Model AI sedang disiapkan. Tunggu sebentar.");state.modelLoading=true;try{setProgress(8,"Mengunduh mesin AI (pertama kali saja)…");env.allowLocalModels=false;env.useBrowserCache=true;let remover;if(navigator.gpu){try{setProgress(24,"Menyiapkan AI dengan akselerasi GPU…");remover=await pipeline("background-removal","Orangebot/ormbg-ONNX",{device:"webgpu",dtype:"fp16"})}catch(error){console.warn("WebGPU tidak tersedia, beralih ke CPU/WASM.",error)}}if(!remover){setProgress(30,"Menyiapkan AI mode kompatibel…");remover=await pipeline("background-removal","Orangebot/ormbg-ONNX",{device:"wasm",dtype:"uint8"})}state.remover=remover;return remover}finally{state.modelLoading=false}}
+async function loadModel(){
+  if(state.remover)return state.remover;
+  if(state.modelLoading)throw new Error("Model AI sedang disiapkan. Tunggu sebentar.");
+  state.modelLoading=true;
+  try{
+    setProgress(8,"Menyiapkan mesin AI…");
+    env.allowLocalModels=false;
+    env.useBrowserCache=true;
+    let remover=null;
+    if(navigator.gpu&&typeof navigator.gpu.requestAdapter==="function"){
+      try{
+        setProgress(18,"Memeriksa dukungan GPU…");
+        const adapter=await navigator.gpu.requestAdapter();
+        if(adapter){
+          const supportsFp16=adapter.features&&adapter.features.has("shader-f16");
+          setProgress(28,supportsFp16?"Menyiapkan AI dengan GPU…":"GPU terdeteksi, menyiapkan mode kompatibel…");
+          remover=await pipeline("background-removal","Orangebot/ormbg-ONNX",{
+            device:"webgpu",
+            dtype:supportsFp16?"fp16":"fp32"
+          });
+        }else{
+          console.info("WebGPU adapter tidak tersedia; menggunakan CPU/WASM.");
+        }
+      }catch(error){
+        console.warn("WebGPU tidak dapat digunakan; beralih ke CPU/WASM.",error);
+      }
+    }else{
+      console.info("WebGPU tidak didukung browser; menggunakan CPU/WASM.");
+    }
+    if(!remover){
+      setProgress(32,"Menyiapkan AI mode kompatibel (CPU/WASM)…");
+      remover=await pipeline("background-removal","Orangebot/ormbg-ONNX",{
+        device:"wasm",
+        dtype:"uint8"
+      });
+    }
+    state.remover=remover;
+    return remover;
+  }finally{
+    state.modelLoading=false;
+  }
+}
 async function removeBackground(){if(!state.source||state.busy)return;setBusy(true,"Menyiapkan AI…");try{const remover=await loadModel();setProgress(62,"AI sedang mengenali objek…");const maxSide=1280,scale=Math.min(1,maxSide/Math.max(state.width,state.height)),inferenceWidth=Math.max(1,Math.round(state.width*scale)),inferenceHeight=Math.max(1,Math.round(state.height*scale)),inferenceCanvas=createCanvas(inferenceWidth,inferenceHeight);inferenceCanvas.getContext("2d").drawImage(state.source,0,0,inferenceWidth,inferenceHeight);const result=await remover(inferenceCanvas),cutout=Array.isArray(result)?result[0]:result;if(!cutout)throw new Error("AI tidak menghasilkan mask. Coba foto lain.");let cutoutCanvas;if(typeof cutout.toCanvas==="function")cutoutCanvas=cutout.toCanvas();else if(cutout instanceof HTMLCanvasElement)cutoutCanvas=cutout;else throw new Error("Format hasil AI tidak dikenali.");const cutoutCtx=cutoutCanvas.getContext("2d",{willReadFrequently:true}),pixels=cutoutCtx.getImageData(0,0,cutoutCanvas.width,cutoutCanvas.height),data=pixels.data;let hasAlpha=false;for(let i=3;i<data.length;i+=4){if(data[i]<250){hasAlpha=true;break}}if(!hasAlpha){for(let i=0;i<data.length;i+=4)data[i+3]=Math.round(data[i]*.299+data[i+1]*.587+data[i+2]*.114);cutoutCtx.putImageData(pixels,0,0)}setProgress(88,"Menyusun hasil pada resolusi asli…");const mask=createCanvas(state.width,state.height);mask.getContext("2d").drawImage(cutoutCanvas,0,0,state.width,state.height);state.mask=mask;state.baseMask=createCanvas(state.width,state.height);state.baseMask.getContext("2d").drawImage(mask,0,0);brush.style.pointerEvents="auto";render();$("previewStatus").textContent="Background terhapus";$("resetMask").disabled=false;finishProgress();toast("Background berhasil diproses. Periksa tepi objek sebelum ekspor.")}catch(error){console.error(error);finishProgress();toast(error.message||"Gagal memproses foto. Periksa koneksi dan coba lagi.")}finally{setBusy(false);enableExports()}}
 function setBackground(value){state.background=value;document.querySelectorAll(".swatch").forEach(b=>b.classList.toggle("selected",b.dataset.bg===value));render()}
 let pickerHue=210,pickerSaturation=100,pickerValue=100;
