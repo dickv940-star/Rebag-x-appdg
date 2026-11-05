@@ -22,26 +22,41 @@ function decontaminateEdgeColors(){
   const image=ctx.getImageData(0,0,width,height),mask=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height);
   const src=image.data,alpha=mask.data,strength=state.decontaminate/100;
   if(strength<=0){state.cleanedSource=sourceCanvas;return}
-  // Only inspect semi-transparent edge pixels. A compact 8-neighbour sample avoids
-  // the previous 24-sample search for every edge pixel on large source images.
-  const offsets=[[-2,0], [2,0], [0,-2], [0,2], [-3,-3], [3,-3], [-3,3], [3,3]];
-  for(let y=2;y<height-2;y++){
-    let i=(y*width+2)*4;
-    for(let x=2;x<width-2;x++,i+=4){
+  // Estimate the old background color from nearby transparent pixels, then
+  // un-composite edge RGB: observed = alpha * foreground + (1-alpha) * oldBackground.
+  // Multiple radii and directions handle uneven backgrounds and fine hair edges.
+  const offsets=[];
+  for(const radius of [2,3,5,7]){
+    for(let step=0;step<16;step++){
+      const angle=(Math.PI*2*step)/16;
+      offsets.push([Math.round(Math.cos(angle)*radius),Math.round(Math.sin(angle)*radius),radius]);
+    }
+  }
+  for(let y=7;y<height-7;y++){
+    let i=(y*width+7)*4;
+    for(let x=7;x<width-7;x++,i+=4){
       const a=alpha[i+3]/255;
-      if(a<0.12||a>0.88)continue;
-      let r=0,g=0,b=0,n=0;
-      for(let k=0;k<8;k++){
-        const dx=offsets[k][0],dy=offsets[k][1],ni=i+(dy*width+dx)*4;
-        if(alpha[ni+3]>12)continue;
-        r+=src[ni];g+=src[ni+1];b+=src[ni+2];n++;
+      if(a<0.10||a>0.94)continue;
+      let r=0,g=0,b=0,total=0;
+      for(let k=0;k<offsets.length;k++){
+        const [dx,dy,distance]=offsets[k],ni=i+(dy*width+dx)*4,na=alpha[ni+3]/255;
+        // Only sample confidently removed background, never subject pixels.
+        if(na>0.035)continue;
+        const weight=1/(distance*distance);
+        r+=src[ni]*weight;g+=src[ni+1]*weight;b+=src[ni+2]*weight;total+=weight;
       }
-      if(!n)continue;
-      const inv=1/n,correction=Math.min(.78,strength*(1-a)*.9),denom=Math.max(.28,a);
-      const rr=r*inv,gg=g*inv,bb=b*inv;
-      src[i]=Math.max(0,Math.min(255,Math.round(src[i]+(((src[i]-(1-a)*rr)/denom)-src[i])*correction)));
-      src[i+1]=Math.max(0,Math.min(255,Math.round(src[i+1]+(((src[i+1]-(1-a)*gg)/denom)-src[i+1])*correction)));
-      src[i+2]=Math.max(0,Math.min(255,Math.round(src[i+2]+(((src[i+2]-(1-a)*bb)/denom)-src[i+2])*correction)));
+      if(total===0)continue;
+      const inv=1/total,denom=Math.max(0.18,a);
+      const fgR=Math.max(0,Math.min(255,(src[i]-(1-a)*r*inv)/denom));
+      const fgG=Math.max(0,Math.min(255,(src[i+1]-(1-a)*g*inv)/denom));
+      const fgB=Math.max(0,Math.min(255,(src[i+2]-(1-a)*b*inv)/denom));
+      // Avoid amplifying noise in nearly transparent pixels; stronger cleanup
+      // is applied to the visible fringe where the old background is noticeable.
+      const confidence=Math.max(0,Math.min(1,(a-0.10)/0.42));
+      const correction=Math.min(0.96,strength*(1-a)*(.42+.58*confidence));
+      src[i]=Math.round(src[i]+(fgR-src[i])*correction);
+      src[i+1]=Math.round(src[i+1]+(fgG-src[i+1])*correction);
+      src[i+2]=Math.round(src[i+2]+(fgB-src[i+2])*correction);
     }
   }
   ctx.putImageData(image,0,0);state.cleanedSource=sourceCanvas;
