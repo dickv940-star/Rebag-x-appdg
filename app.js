@@ -1,6 +1,6 @@
 import { pipeline, env, AutoModel, AutoProcessor, RawImage } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2";
 const $ = id => document.getElementById(id);
-const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,edgeCleanup:42,decontaminate:85,cleanedSource:null,remover:null,mattingModel:null,mattingProcessor:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
+const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,edgeCleanup:18,decontaminate:100,cleanedSource:null,remover:null,mattingModel:null,mattingProcessor:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
 const preview=$("previewCanvas"),brush=$("brushCanvas"),previewCtx=preview.getContext("2d",{willReadFrequently:true}),brushCtx=brush.getContext("2d"),toastEl=$("toast");
 function toast(message){toastEl.textContent=message;toastEl.classList.add("show");clearTimeout(toast._timer);toast._timer=setTimeout(()=>toastEl.classList.remove("show"),3200)}
 function setBusy(busy,label){state.busy=busy;$("removeButton").disabled=busy||!state.source;$("removeButton").textContent=busy?(label||"Memproses…"):"✦ Hapus background otomatis"}
@@ -13,53 +13,70 @@ function drawBackground(ctx){if(state.background==="transparent")return;if(state
 function render(){if(!state.source)return;previewCtx.clearRect(0,0,preview.width,preview.height);drawBackground(previewCtx);previewCtx.drawImage(buildSubjectCanvas(),0,0)}
 function showEditor(){if(!state.source)return;$("removeButton").disabled=state.busy;$("emptyState").hidden=true;preview.width=brush.width=state.width;preview.height=brush.height=state.height;preview.classList.add("visible");brush.classList.add("visible");brush.style.pointerEvents=state.mask?"auto":"none";brushCtx.clearRect(0,0,brush.width,brush.height);render();$("dimensions").textContent=state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent=state.mask?"Background terhapus":"Foto asli";$("zoomLabel").textContent="Rasio dan resolusi asli";$("resetMask").disabled=!state.mask;enableExports()}
 function enableExports(){["exportPng","exportJpg","exportPdf"].forEach(id=>$(id).disabled=!state.source||state.busy)}
-function applyEdgeCleanup(){if(!state.baseMask||!state.mask)return;const source=state.baseMask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height),target=state.mask.getContext("2d"),pixels=source.data,strength=state.edgeCleanup/100,cutoff=strength*.08,exponent=1+strength*.38;for(let i=3;i<pixels.length;i+=4){const alpha=pixels[i]/255;if(alpha<=0){pixels[i]=0;continue}if(strength===0)continue;const normalized=Math.max(0,Math.min(1,(alpha-cutoff)/(1-cutoff)));pixels[i]=Math.round(Math.pow(normalized,exponent)*255)}target.putImageData(source,0,0)}
+function applyEdgeCleanup(){
+  if(!state.baseMask||!state.mask)return;
+  const source=state.baseMask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height);
+  const target=state.mask.getContext("2d"),pixels=source.data,strength=state.edgeCleanup/100;
+  // Preserve low-opacity hair strands while reducing faint background haze.
+  const cutoff=strength*.025,exponent=1+strength*.16;
+  for(let i=3;i<pixels.length;i+=4){
+    const alpha=pixels[i]/255;
+    if(alpha<=0){pixels[i]=0;continue}
+    if(strength===0)continue;
+    const normalized=Math.max(0,Math.min(1,(alpha-cutoff)/(1-cutoff)));
+    pixels[i]=Math.round(Math.pow(normalized,exponent)*255);
+  }
+  target.putImageData(source,0,0);
+}
 function decontaminateEdgeColors(){
   if(!state.source||!state.mask)return;
   const width=state.width,height=state.height;
   const sourceCanvas=createCanvas(width,height),ctx=sourceCanvas.getContext("2d",{willReadFrequently:true});
   ctx.drawImage(state.source,0,0,width,height);
-  const image=ctx.getImageData(0,0,width,height),mask=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height);
+  const image=ctx.getImageData(0,0,width,height);
+  const mask=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height);
   const src=image.data,alpha=mask.data,strength=state.decontaminate/100;
   if(strength<=0){state.cleanedSource=sourceCanvas;return}
-  // Estimate the old background color from nearby transparent pixels, then
-  // un-composite edge RGB: observed = alpha * foreground + (1-alpha) * oldBackground.
-  // Multiple radii and directions handle uneven backgrounds and fine hair edges.
-  const offsets=[];
-  for(const radius of [2,4,6]){
-    for(let step=0;step<8;step++){
-      const angle=(Math.PI*2*step)/8;
-      offsets.push([Math.round(Math.cos(angle)*radius),Math.round(Math.sin(angle)*radius),radius]);
-    }
-  }
-  for(let y=7;y<height-7;y++){
-    let i=(y*width+7)*4;
-    for(let x=7;x<width-7;x++,i+=4){
+  // Estimate old background from nearby fully transparent pixels. Prefer the
+  // nearest radius with enough samples to avoid pulling in distant colors.
+  const rings=[2,4,7,11];
+  for(let y=11;y<height-11;y++){
+    let i=(y*width+11)*4;
+    for(let x=11;x<width-11;x++,i+=4){
       const a=alpha[i+3]/255;
-      if(a<0.10||a>0.94)continue;
-      let r=0,g=0,b=0,total=0;
-      for(let k=0;k<offsets.length;k++){
-        const [dx,dy,distance]=offsets[k],ni=i+(dy*width+dx)*4,na=alpha[ni+3]/255;
-        // Only sample confidently removed background, never subject pixels.
-        if(na>0.035)continue;
-        const weight=1/(distance*distance);
-        r+=src[ni]*weight;g+=src[ni+1]*weight;b+=src[ni+2]*weight;total+=weight;
+      if(a<0.07||a>0.999)continue;
+      let bgR=0,bgG=0,bgB=0,total=0,samples=0;
+      for(const radius of rings){
+        bgR=bgG=bgB=total=samples=0;
+        const directions=16;
+        for(let step=0;step<directions;step++){
+          const angle=(Math.PI*2*step)/directions;
+          const dx=Math.round(Math.cos(angle)*radius),dy=Math.round(Math.sin(angle)*radius);
+          const ni=i+(dy*width+dx)*4,na=alpha[ni+3]/255;
+          if(na>0.02)continue;
+          const weight=1/(radius*radius);
+          bgR+=src[ni]*weight;bgG+=src[ni+1]*weight;bgB+=src[ni+2]*weight;
+          total+=weight;samples++;
+        }
+        if(samples>=2)break;
       }
-      if(total===0)continue;
-      const inv=1/total,denom=Math.max(0.18,a);
-      const fgR=Math.max(0,Math.min(255,(src[i]-(1-a)*r*inv)/denom));
-      const fgG=Math.max(0,Math.min(255,(src[i+1]-(1-a)*g*inv)/denom));
-      const fgB=Math.max(0,Math.min(255,(src[i+2]-(1-a)*b*inv)/denom));
-      // Avoid amplifying noise in nearly transparent pixels; stronger cleanup
-      // is applied to the visible fringe where the old background is noticeable.
-      const confidence=Math.max(0,Math.min(1,(a-0.10)/0.42));
-      const correction=Math.min(0.96,strength*(1-a)*(.42+.58*confidence));
-      src[i]=Math.round(src[i]+(fgR-src[i])*correction);
-      src[i+1]=Math.round(src[i+1]+(fgG-src[i+1])*correction);
-      src[i+2]=Math.round(src[i+2]+(fgB-src[i+2])*correction);
+      if(samples<2||total===0)continue;
+      const inv=1/total,bg=[bgR*inv,bgG*inv,bgB*inv],denom=Math.max(0.16,a);
+      const foreground=[
+        Math.max(0,Math.min(255,(src[i]-(1-a)*bg[0])/denom)),
+        Math.max(0,Math.min(255,(src[i+1]-(1-a)*bg[1])/denom)),
+        Math.max(0,Math.min(255,(src[i+2]-(1-a)*bg[2])/denom))
+      ];
+      const sampleConfidence=Math.min(1,samples/6);
+      const alphaConfidence=Math.min(1,Math.max(.22,(a-.07)/.28));
+      const correction=Math.min(1,strength*sampleConfidence*alphaConfidence);
+      src[i]=Math.round(src[i]+(foreground[0]-src[i])*correction);
+      src[i+1]=Math.round(src[i+1]+(foreground[1]-src[i+1])*correction);
+      src[i+2]=Math.round(src[i+2]+(foreground[2]-src[i+2])*correction);
     }
   }
-  ctx.putImageData(image,0,0);state.cleanedSource=sourceCanvas;
+  ctx.putImageData(image,0,0);
+  state.cleanedSource=sourceCanvas;
 }
 async function refineHairMatting({automatic=false}={}){
   if(!state.source||!state.mask||state.busy)return;
@@ -91,8 +108,8 @@ async function refineHairMatting({automatic=false}={}){
     const refined=createCanvas(state.width,state.height),ctx=refined.getContext("2d");
     const pixels=ctx.createImageData(state.width,state.height),base=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height).data,out=pixels.data;
     // Use MODNet's predicted alpha matte directly, not the RGB channels of a cutout.
-    // Keep ORMBG's stronger body/subject detection while recovering soft hair detail.
-    const mix=.72,channels=matte.channels;
+    // MODNet is the dedicated portrait matting model; use its alpha directly for natural hair edges.
+    const mix=1,channels=matte.channels;
     for(let y=0;y<state.height;y++){
       const my=Math.min(matte.height-1,Math.floor(y*matte.height/state.height));
       for(let x=0,i=(y*state.width)*4;x<state.width;x++,i+=4){
