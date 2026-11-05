@@ -1,6 +1,6 @@
 import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2";
 const $ = id => document.getElementById(id);
-const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,remover:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
+const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,remover:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null,installPrompt:null};
 const preview=$("previewCanvas"),brush=$("brushCanvas"),previewCtx=preview.getContext("2d",{willReadFrequently:true}),brushCtx=brush.getContext("2d"),toastEl=$("toast");
 function toast(message){toastEl.textContent=message;toastEl.classList.add("show");clearTimeout(toast._timer);toast._timer=setTimeout(()=>toastEl.classList.remove("show"),3200)}
 function setBusy(busy,label){state.busy=busy;$("removeButton").disabled=busy||!state.source;$("removeButton").textContent=busy?(label||"Memproses…"):"✦ Hapus background otomatis"}
@@ -45,7 +45,43 @@ brush.addEventListener("pointerdown",onBrushDown);brush.addEventListener("pointe
 $("exportPng").addEventListener("click",exportPng);$("exportJpg").addEventListener("click",exportJpg);$("exportPdf").addEventListener("click",exportPdf);
 $("fitButton").addEventListener("click",()=>{if(state.source){showEditor();toast("Pratinjau disesuaikan ke area.")}});
 $("resetView").addEventListener("click",()=>{if(state.source)render()});
-window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();state.installPrompt=e;$("installButton").hidden=false});
-$("installButton").addEventListener("click",async()=>{if(!state.installPrompt)return;state.installPrompt.prompt();await state.installPrompt.userChoice;state.installPrompt=null;$("installButton").hidden=true});
+const installButton=$("installButton");
+window.addEventListener("beforeinstallprompt",event=>{
+  // Simpan event agar dialog native baru terbuka setelah pengguna menekan tombol.
+  event.preventDefault();
+  state.installPrompt=event;
+  installButton.hidden=false;
+  installButton.disabled=false;
+});
+installButton.addEventListener("click",async()=>{
+  const installEvent=state.installPrompt;
+  if(!installEvent){
+    toast("Prompt instalasi belum tersedia. Buka menu browser lalu pilih Install Rebag.");
+    return;
+  }
+  // prompt() hanya boleh dipanggil sekali untuk setiap event dan harus berasal dari klik pengguna.
+  state.installPrompt=null;
+  installButton.disabled=true;
+  try{
+    const result=await installEvent.prompt();
+    if(result?.outcome==="accepted"){
+      toast("Permintaan pemasangan Rebag diterima.");
+    }else{
+      toast("Pemasangan belum dilakukan. Anda dapat mencoba lagi melalui menu browser.");
+    }
+  }catch(error){
+    console.warn("Prompt instalasi gagal:",error);
+    toast("Dialog instalasi tidak dapat dibuka. Gunakan menu browser untuk memasang Rebag.");
+  }finally{
+    installButton.hidden=true;
+    installButton.disabled=false;
+  }
+});
+window.addEventListener("appinstalled",()=>{
+  state.installPrompt=null;
+  installButton.hidden=true;
+  installButton.disabled=false;
+  toast("Rebag berhasil dipasang di perangkat.");
+});
 if("serviceWorker"in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(e=>console.warn("Service worker gagal didaftarkan:",e)));
 enableExports();
