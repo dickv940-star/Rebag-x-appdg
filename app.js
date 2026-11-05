@@ -60,18 +60,21 @@ async function refineHairMatting({automatic=false}={}){
     const output=await state.mattingRefiner(blob),matte=Array.isArray(output)?output[0]:output;
     if(!matte||typeof matte.toCanvas!=="function")throw new Error("Model matting tidak menghasilkan mask yang valid.");
     const matteCanvas=matte.toCanvas(),mc=matteCanvas.getContext("2d",{willReadFrequently:true});
-    const mp=mc.getImageData(0,0,matteCanvas.width,matteCanvas.height).data;
+    const mattePixels=mc.getImageData(0,0,matteCanvas.width,matteCanvas.height).data;
     const refined=createCanvas(state.width,state.height),ctx=refined.getContext("2d");
-    ctx.drawImage(matteCanvas,0,0,state.width,state.height);
-    const pixels=ctx.getImageData(0,0,state.width,state.height),base=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height).data,out=pixels.data,mix=.68;
+    const pixels=ctx.createImageData(state.width,state.height),base=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height).data,out=pixels.data,mix=.68;
+    // MODNet's RGBA result stores the portrait matte in alpha. RGB is source color,
+    // so reading RGB luminance here would produce an invalid transparency mask.
     for(let y=0;y<state.height;y++){
       for(let x=0,i=(y*state.width)*4;x<state.width;x++,i+=4){
         const mx=Math.min(matteCanvas.width-1,Math.floor(x*matteCanvas.width/state.width));
         const my=Math.min(matteCanvas.height-1,Math.floor(y*matteCanvas.height/state.height)),mi=(my*matteCanvas.width+mx)*4;
-        const a=Math.round(mp[mi]*.299+mp[mi+1]*.587+mp[mi+2]*.114);
-        out[i]=out[i+1]=out[i+2]=255;out[i+3]=Math.round(base[i+3]*(1-mix)+a*mix);
+        const modnetAlpha=mattePixels[mi+3];
+        out[i]=out[i+1]=out[i+2]=255;
+        out[i+3]=Math.round(base[i+3]*(1-mix)+modnetAlpha*mix);
       }
     }
+    ctx.putImageData(pixels,0,0);
     ctx.putImageData(pixels,0,0);state.baseMask=refined;state.mask=createCanvas(state.width,state.height);
     state.mask.getContext("2d").drawImage(refined,0,0);applyEdgeCleanup();decontaminateEdgeColors();render();
     $("previewStatus").textContent="Detail rambut diperhalus otomatis";toast(automatic?"Penghapusan background dan perapian rambut otomatis selesai.":"Matting rambut selesai. Periksa detail sebelum ekspor.");
