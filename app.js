@@ -26,9 +26,9 @@ function decontaminateEdgeColors(){
   // un-composite edge RGB: observed = alpha * foreground + (1-alpha) * oldBackground.
   // Multiple radii and directions handle uneven backgrounds and fine hair edges.
   const offsets=[];
-  for(const radius of [2,3,5,7]){
-    for(let step=0;step<16;step++){
-      const angle=(Math.PI*2*step)/16;
+  for(const radius of [2,4,6]){
+    for(let step=0;step<8;step++){
+      const angle=(Math.PI*2*step)/8;
       offsets.push([Math.round(Math.cos(angle)*radius),Math.round(Math.sin(angle)*radius),radius]);
     }
   }
