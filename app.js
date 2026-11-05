@@ -13,18 +13,23 @@ function drawBackground(ctx){if(state.background==="transparent")return;if(state
 function render(){if(!state.source)return;previewCtx.clearRect(0,0,preview.width,preview.height);drawBackground(previewCtx);previewCtx.drawImage(buildSubjectCanvas(),0,0)}
 function showEditor(){if(!state.source)return;$("removeButton").disabled=state.busy;$("emptyState").hidden=true;preview.width=brush.width=state.width;preview.height=brush.height=state.height;preview.classList.add("visible");brush.classList.add("visible");brush.style.pointerEvents=state.mask?"auto":"none";brushCtx.clearRect(0,0,brush.width,brush.height);render();$("dimensions").textContent=state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent=state.mask?"Background terhapus":"Foto asli";$("zoomLabel").textContent="Rasio dan resolusi asli";$("resetMask").disabled=!state.mask;enableExports()}
 function enableExports(){["exportPng","exportJpg","exportPdf"].forEach(id=>$(id).disabled=!state.source||state.busy)}
-function applyEdgeCleanup(){
+async function applyEdgeCleanup(){
   if(!state.baseMask||!state.mask)return;
   const source=state.baseMask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height);
   const target=state.mask.getContext("2d"),pixels=source.data,strength=state.edgeCleanup/100;
   // Preserve low-opacity hair strands while reducing faint background haze.
   const cutoff=strength*.025,exponent=1+strength*.16;
-  for(let i=3;i<pixels.length;i+=4){
+  const rowStride=state.width*4;
+  for(let y=0;y<state.height;y++){
+    if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
+    const rowStart=y*rowStride,rowEnd=rowStart+rowStride;
+    for(let i=rowStart+3;i<rowEnd;i+=4){
     const alpha=pixels[i]/255;
     if(alpha<=0){pixels[i]=0;continue}
     if(strength===0)continue;
     const normalized=Math.max(0,Math.min(1,(alpha-cutoff)/(1-cutoff)));
     pixels[i]=Math.round(Math.pow(normalized,exponent)*255);
+    }
   }
   target.putImageData(source,0,0);
 }
@@ -126,7 +131,7 @@ async function refineHairMatting({automatic=false}={}){
     ctx.putImageData(pixels,0,0);
     state.baseMask=refined;state.mask=createCanvas(state.width,state.height);
     state.mask.getContext("2d").drawImage(refined,0,0);
-    applyEdgeCleanup();await decontaminateEdgeColors();render();
+    await await applyEdgeCleanup();await decontaminateEdgeColors();render();
     $("previewStatus").textContent="Matte rambut dan tepi diperhalus";
     toast(automatic?"Penghapusan background dan perapian matte otomatis selesai.":"Perapian matte selesai. Periksa detail sebelum ekspor.");
   }catch(error){
