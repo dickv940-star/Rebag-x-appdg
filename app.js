@@ -116,9 +116,9 @@ async function refineHairMatting({automatic=false}={}){
     setProgress(78,"Menggabungkan matte rambut dengan deteksi subjek…");
     const refined=createCanvas(state.width,state.height),ctx=refined.getContext("2d");
     const pixels=ctx.createImageData(state.width,state.height),base=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height).data,out=pixels.data;
-    // Use MODNet's predicted alpha matte directly, not the RGB channels of a cutout.
-    // MODNet is the dedicated portrait matting model; use its alpha directly for natural hair edges.
-    const mix=1,channels=matte.channels;
+    // Fuse both masks: keep confident ORMBG foreground/background decisions,
+    // and let MODNet refine only the uncertain silhouette and fine hair.
+    const channels=matte.channels;
     for(let y=0;y<state.height;y++){
       if((y&7)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
       const my=Math.min(matte.height-1,Math.floor(y*matte.height/state.height));
@@ -128,8 +128,19 @@ async function refineHairMatting({automatic=false}={}){
         let value=matte.data[mi];
         if(channels>=3)value=(matte.data[mi]+matte.data[mi+1]+matte.data[mi+2])/3;
         const modnetAlpha=Math.max(0,Math.min(255,value));
+        const baseAlpha=base[i+3];
+        let fusedAlpha;
+        if(baseAlpha>=248){
+          fusedAlpha=255;
+        }else if(baseAlpha<=7){
+          // Recover wispy hair only when MODNet has meaningful foreground confidence.
+          fusedAlpha=modnetAlpha>=10?Math.round(modnetAlpha*.82):0;
+        }else{
+          // The original segmentation anchors the contour while MODNet supplies edge detail.
+          fusedAlpha=Math.round(baseAlpha*.18+modnetAlpha*.82);
+        }
         out[i]=out[i+1]=out[i+2]=255;
-        out[i+3]=Math.round(base[i+3]*(1-mix)+modnetAlpha*mix);
+        out[i+3]=Math.max(0,Math.min(255,fusedAlpha));
       }
     }
     ctx.putImageData(pixels,0,0);
