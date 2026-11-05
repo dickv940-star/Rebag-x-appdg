@@ -16,32 +16,35 @@ function enableExports(){["exportPng","exportJpg","exportPdf"].forEach(id=>$(id)
 function applyEdgeCleanup(){if(!state.baseMask||!state.mask)return;const source=state.baseMask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height),target=state.mask.getContext("2d"),pixels=source.data,strength=state.edgeCleanup/100,cutoff=strength*.32,exponent=1+strength*1.1;for(let i=3;i<pixels.length;i+=4){const alpha=pixels[i]/255;if(alpha<=0){pixels[i]=0;continue}if(strength===0)continue;const normalized=Math.max(0,Math.min(1,(alpha-cutoff)/(1-cutoff)));pixels[i]=Math.round(Math.pow(normalized,exponent)*255)}target.putImageData(source,0,0)}
 function decontaminateEdgeColors(){
   if(!state.source||!state.mask)return;
-  const width=state.width,height=state.height,total=width*height;
-  const sourceCanvas=createCanvas(width,height),sourceCtx=sourceCanvas.getContext("2d",{willReadFrequently:true});
-  sourceCtx.drawImage(state.source,0,0,width,height);
-  const source=sourceCtx.getImageData(0,0,width,height),mask=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height);
-  const src=source.data,alpha=mask.data,strength=state.decontaminate/100;
+  const width=state.width,height=state.height;
+  const sourceCanvas=createCanvas(width,height),ctx=sourceCanvas.getContext("2d",{willReadFrequently:true});
+  ctx.drawImage(state.source,0,0,width,height);
+  const image=ctx.getImageData(0,0,width,height),mask=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height);
+  const src=image.data,alpha=mask.data,strength=state.decontaminate/100;
   if(strength<=0){state.cleanedSource=sourceCanvas;return}
-  const offsets=[];
-  for(const radius of [2,4,7])for(let k=0;k<8;k++){const angle=k*Math.PI/4;offsets.push([Math.round(Math.cos(angle)*radius),Math.round(Math.sin(angle)*radius),1/radius])}
-  for(let y=0;y<height;y++)for(let x=0;x<width;x++){
-    const i=(y*width+x)*4,a=alpha[i+3]/255;
-    if(a<0.08||a>0.94)continue;
-    let br=0,bg=0,bb=0,weight=0;
-    for(const [dx,dy,w] of offsets){
-      const nx=x+dx,ny=y+dy;if(nx<0||ny<0||nx>=width||ny>=height)continue;
-      const ni=(ny*width+nx)*4,na=alpha[ni+3];
-      if(na>18)continue;
-      br+=src[ni]*w;bg+=src[ni+1]*w;bb+=src[ni+2]*w;weight+=w;
+  // Only inspect semi-transparent edge pixels. A compact 8-neighbour sample avoids
+  // the previous 24-sample search for every edge pixel on large source images.
+  const offsets=[[-2,0], [2,0], [0,-2], [0,2], [-3,-3], [3,-3], [-3,3], [3,3]];
+  for(let y=2;y<height-2;y++){
+    let i=(y*width+2)*4;
+    for(let x=2;x<width-2;x++,i+=4){
+      const a=alpha[i+3]/255;
+      if(a<0.12||a>0.88)continue;
+      let r=0,g=0,b=0,n=0;
+      for(let k=0;k<8;k++){
+        const dx=offsets[k][0],dy=offsets[k][1],ni=i+(dy*width+dx)*4;
+        if(alpha[ni+3]>12)continue;
+        r+=src[ni];g+=src[ni+1];b+=src[ni+2];n++;
+      }
+      if(!n)continue;
+      const inv=1/n,correction=Math.min(1,strength*(1-a)*1.15),denom=Math.max(.2,a);
+      const rr=r*inv,gg=g*inv,bb=b*inv;
+      src[i]=Math.max(0,Math.min(255,Math.round(src[i]+(((src[i]-(1-a)*rr)/denom)-src[i])*correction)));
+      src[i+1]=Math.max(0,Math.min(255,Math.round(src[i+1]+(((src[i+1]-(1-a)*gg)/denom)-src[i+1])*correction)));
+      src[i+2]=Math.max(0,Math.min(255,Math.round(src[i+2]+(((src[i+2]-(1-a)*bb)/denom)-src[i+2])*correction)));
     }
-    if(!weight)continue;
-    br/=weight;bg/=weight;bb/=weight;
-    const correction=Math.min(1,strength*(1-a)*1.25),denom=Math.max(0.16,a);
-    src[i]=Math.max(0,Math.min(255,Math.round(src[i]+(((src[i]-(1-a)*br)/denom)-src[i])*correction)));
-    src[i+1]=Math.max(0,Math.min(255,Math.round(src[i+1]+(((src[i+1]-(1-a)*bg)/denom)-src[i+1])*correction)));
-    src[i+2]=Math.max(0,Math.min(255,Math.round(src[i+2]+(((src[i+2]-(1-a)*bb)/denom)-src[i+2])*correction)));
   }
-  sourceCtx.putImageData(source,0,0);state.cleanedSource=sourceCanvas;
+  ctx.putImageData(image,0,0);state.cleanedSource=sourceCanvas;
 }
 async function loadModel(){
   if(state.remover)return state.remover;
@@ -84,7 +87,7 @@ async function loadModel(){
     state.modelLoading=false;
   }
 }
-async function removeBackground(){if(!state.source||state.busy)return;setBusy(true,"Menyiapkan AI…");try{const remover=await loadModel();setProgress(62,"AI sedang mengenali objek…");const maxSide=1600,scale=Math.min(1,maxSide/Math.max(state.width,state.height)),inferenceWidth=Math.max(1,Math.round(state.width*scale)),inferenceHeight=Math.max(1,Math.round(state.height*scale)),inferenceCanvas=createCanvas(inferenceWidth,inferenceHeight);inferenceCanvas.getContext("2d").drawImage(state.source,0,0,inferenceWidth,inferenceHeight);const inferenceBlob=await new Promise((resolve,reject)=>inferenceCanvas.toBlob(blob=>blob?resolve(blob):reject(new Error("Gagal menyiapkan gambar untuk AI.")),"image/png"));const result=await remover(inferenceBlob),cutout=Array.isArray(result)?result[0]:result;if(!cutout)throw new Error("AI tidak menghasilkan mask. Coba foto lain.");let cutoutCanvas;if(typeof cutout.toCanvas==="function")cutoutCanvas=cutout.toCanvas();else if(cutout instanceof HTMLCanvasElement)cutoutCanvas=cutout;else throw new Error("Format hasil AI tidak dikenali.");const cutoutCtx=cutoutCanvas.getContext("2d",{willReadFrequently:true}),pixels=cutoutCtx.getImageData(0,0,cutoutCanvas.width,cutoutCanvas.height),data=pixels.data;let hasAlpha=false;for(let i=3;i<data.length;i+=4){if(data[i]<250){hasAlpha=true;break}}if(!hasAlpha){for(let i=0;i<data.length;i+=4)data[i+3]=Math.round(data[i]*.299+data[i+1]*.587+data[i+2]*.114);cutoutCtx.putImageData(pixels,0,0)}setProgress(88,"Menyusun hasil pada resolusi asli…");const mask=createCanvas(state.width,state.height);mask.getContext("2d").drawImage(cutoutCanvas,0,0,state.width,state.height);state.mask=mask;state.baseMask=createCanvas(state.width,state.height);state.baseMask.getContext("2d").drawImage(mask,0,0);applyEdgeCleanup();decontaminateEdgeColors();brush.style.pointerEvents="auto";render();$("previewStatus").textContent="Background terhapus";$("resetMask").disabled=false;finishProgress();toast("Background berhasil diproses. Periksa tepi objek sebelum ekspor.")}catch(error){console.error(error);finishProgress();toast(error.message||"Gagal memproses foto. Periksa koneksi dan coba lagi.")}finally{setBusy(false);enableExports()}}
+async function removeBackground(){if(!state.source||state.busy)return;setBusy(true,"Menyiapkan AI…");try{const remover=await loadModel();setProgress(55,"AI sedang mengenali objek…");const maxSide=1024,scale=Math.min(1,maxSide/Math.max(state.width,state.height)),inferenceWidth=Math.max(1,Math.round(state.width*scale)),inferenceHeight=Math.max(1,Math.round(state.height*scale)),inferenceCanvas=createCanvas(inferenceWidth,inferenceHeight);inferenceCanvas.getContext("2d").drawImage(state.source,0,0,inferenceWidth,inferenceHeight);const inferenceBlob=await new Promise((resolve,reject)=>inferenceCanvas.toBlob(blob=>blob?resolve(blob):reject(new Error("Gagal menyiapkan gambar untuk AI.")),"image/png"));const result=await remover(inferenceBlob),cutout=Array.isArray(result)?result[0]:result;if(!cutout)throw new Error("AI tidak menghasilkan mask. Coba foto lain.");let cutoutCanvas;if(typeof cutout.toCanvas==="function")cutoutCanvas=cutout.toCanvas();else if(cutout instanceof HTMLCanvasElement)cutoutCanvas=cutout;else throw new Error("Format hasil AI tidak dikenali.");const cutoutCtx=cutoutCanvas.getContext("2d",{willReadFrequently:true}),pixels=cutoutCtx.getImageData(0,0,cutoutCanvas.width,cutoutCanvas.height),data=pixels.data;let hasAlpha=false;for(let i=3;i<data.length;i+=4){if(data[i]<250){hasAlpha=true;break}}if(!hasAlpha){for(let i=0;i<data.length;i+=4)data[i+3]=Math.round(data[i]*.299+data[i+1]*.587+data[i+2]*.114);cutoutCtx.putImageData(pixels,0,0)}setProgress(88,"Menyusun hasil pada resolusi asli…");const mask=createCanvas(state.width,state.height);mask.getContext("2d").drawImage(cutoutCanvas,0,0,state.width,state.height);state.mask=mask;state.baseMask=createCanvas(state.width,state.height);state.baseMask.getContext("2d").drawImage(mask,0,0);applyEdgeCleanup();decontaminateEdgeColors();brush.style.pointerEvents="auto";render();$("previewStatus").textContent="Background terhapus";$("resetMask").disabled=false;finishProgress();toast("Background berhasil diproses. Periksa tepi objek sebelum ekspor.")}catch(error){console.error(error);finishProgress();toast(error.message||"Gagal memproses foto. Periksa koneksi dan coba lagi.")}finally{setBusy(false);enableExports()}}
 function setBackground(value){state.background=value;document.querySelectorAll(".swatch").forEach(b=>b.classList.toggle("selected",b.dataset.bg===value));render()}
 let pickerHue=210,pickerSaturation=100,pickerValue=100;
 function hsvToHex(h,s,v){s/=100;v/=100;const c=v*s,x=c*(1-Math.abs((h/60)%2-1)),m=v-c;let r=0,g=0,b=0;if(h<60){r=c;g=x}else if(h<120){r=x;g=c}else if(h<180){g=c;b=x}else if(h<240){g=x;b=c}else if(h<300){r=x;b=c}else{r=c;b=x}return "#"+[r,g,b].map(n=>Math.round((n+m)*255).toString(16).padStart(2,"0")).join("")}
@@ -115,7 +118,7 @@ bindLivePicker($("saturationPicker"),"saturation");bindLivePicker($("huePicker")
 $("backgroundInput").addEventListener("change",async e=>{const file=e.target.files[0];if(!file)return;try{const loaded=await imageFromFile(file);state.backgroundImage=loaded.img;$("backgroundImageMeta").textContent="Background: "+file.name;setBackground(loaded.img);toast("Background gambar berhasil diterapkan.")}catch(err){toast(err.message)}});
 $("eraseMode").addEventListener("click",()=>{state.mode="erase";$("eraseMode").classList.add("active");$("restoreMode").classList.remove("active")});
 $("restoreMode").addEventListener("click",()=>{state.mode="restore";$("restoreMode").classList.add("active");$("eraseMode").classList.remove("active")});
-$("brushSize").addEventListener("input",e=>{state.brushSize=Number(e.target.value);$("brushValue").textContent=state.brushSize+" px"});$("edgeCleanup").addEventListener("input",e=>{state.edgeCleanup=Number(e.target.value);$("edgeCleanupValue").textContent=state.edgeCleanup+"%";if(state.baseMask){state.mask=createCanvas(state.width,state.height);state.mask.getContext("2d").drawImage(state.baseMask,0,0);applyEdgeCleanup();decontaminateEdgeColors();render()}});$("decontaminate").addEventListener("input",e=>{state.decontaminate=Number(e.target.value);$("decontaminateValue").textContent=state.decontaminate+"%";if(state.baseMask){state.mask=createCanvas(state.width,state.height);state.mask.getContext("2d").drawImage(state.baseMask,0,0);applyEdgeCleanup();decontaminateEdgeColors();render()}});
+$("brushSize").addEventListener("input",e=>{state.brushSize=Number(e.target.value);$("brushValue").textContent=state.brushSize+" px"});let edgeTuneTimer=null;function scheduleEdgeTune(){clearTimeout(edgeTuneTimer);edgeTuneTimer=setTimeout(()=>{if(!state.baseMask)return;state.mask=createCanvas(state.width,state.height);state.mask.getContext("2d").drawImage(state.baseMask,0,0);applyEdgeCleanup();decontaminateEdgeColors();render()},180)}$("edgeCleanup").addEventListener("input",e=>{state.edgeCleanup=Number(e.target.value);$("edgeCleanupValue").textContent=state.edgeCleanup+"%";scheduleEdgeTune()});$("decontaminate").addEventListener("input",e=>{state.decontaminate=Number(e.target.value);$("decontaminateValue").textContent=state.decontaminate+"%";scheduleEdgeTune()});
 $("resetMask").addEventListener("click",resetMask);
 brush.addEventListener("pointerdown",onBrushDown);brush.addEventListener("pointermove",onBrushMove);brush.addEventListener("pointerup",onBrushUp);brush.addEventListener("pointercancel",onBrushUp);
 $("exportPng").addEventListener("click",exportPng);$("exportJpg").addEventListener("click",exportJpg);$("exportPdf").addEventListener("click",exportPdf);
