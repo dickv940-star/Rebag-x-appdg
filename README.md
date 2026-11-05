@@ -17,7 +17,7 @@ The uploaded photo is processed in the browser and is not sent to an application
 
 Dependencies:
 - Transformers.js (Apache-2.0): https://github.com/huggingface/transformers.js
-- ORMBG ONNX model (Apache-2.0 model lineage): https://huggingface.co/onnx-community/ormbg-ONNX
+- ORMBG ONNX model (Apache-2.0 model lineage): https://huggingface.co/Orangebot/ormbg-ONNX
 
 ORMBG is optimized for human subjects. Fine hair, transparent objects, busy backgrounds, and some product/object photos may need manual correction or a future model upgrade. Always review the cutout before exporting.
 
