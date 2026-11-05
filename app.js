@@ -1,6 +1,6 @@
 import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2";
 const $ = id => document.getElementById(id);
-const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,edgeCleanup:42,decontaminate:85,cleanedSource:null,remover:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
+const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,edgeCleanup:42,decontaminate:85,cleanedSource:null,remover:null,mattingRefiner:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
 const preview=$("previewCanvas"),brush=$("brushCanvas"),previewCtx=preview.getContext("2d",{willReadFrequently:true}),brushCtx=brush.getContext("2d"),toastEl=$("toast");
 function toast(message){toastEl.textContent=message;toastEl.classList.add("show");clearTimeout(toast._timer);toast._timer=setTimeout(()=>toastEl.classList.remove("show"),3200)}
 function setBusy(busy,label){state.busy=busy;$("removeButton").disabled=busy||!state.source;$("removeButton").textContent=busy?(label||"Memproses…"):"✦ Hapus background otomatis"}
@@ -45,6 +45,38 @@ function decontaminateEdgeColors(){
     }
   }
   ctx.putImageData(image,0,0);state.cleanedSource=sourceCanvas;
+}
+async function refineHairMatting(){
+  if(!state.source||!state.mask||state.busy)return;
+  const button=$("hairMattingButton");
+  setBusy(true,"Meningkatkan detail rambut…");button.disabled=true;
+  try{
+    setProgress(12,"Memuat model portrait matting…");
+    if(!state.mattingRefiner)state.mattingRefiner=await pipeline("background-removal","Xenova/modnet",{dtype:"fp32"});
+    setProgress(48,"AI sedang memperhalus rambut dan tepi…");
+    const scale=Math.min(1,1024/Math.max(state.width,state.height)),w=Math.max(1,Math.round(state.width*scale)),h=Math.max(1,Math.round(state.height*scale));
+    const input=createCanvas(w,h);input.getContext("2d").drawImage(state.source,0,0,w,h);
+    const blob=await new Promise((resolve,reject)=>input.toBlob(v=>v?resolve(v):reject(new Error("Gagal menyiapkan foto untuk matting.")),"image/png"));
+    const output=await state.mattingRefiner(blob),matte=Array.isArray(output)?output[0]:output;
+    if(!matte||typeof matte.toCanvas!=="function")throw new Error("Model matting tidak menghasilkan mask yang valid.");
+    const matteCanvas=matte.toCanvas(),mc=matteCanvas.getContext("2d",{willReadFrequently:true});
+    const mp=mc.getImageData(0,0,matteCanvas.width,matteCanvas.height).data;
+    const refined=createCanvas(state.width,state.height),ctx=refined.getContext("2d");
+    ctx.drawImage(matteCanvas,0,0,state.width,state.height);
+    const pixels=ctx.getImageData(0,0,state.width,state.height),base=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height).data,out=pixels.data,mix=.68;
+    for(let y=0;y<state.height;y++){
+      for(let x=0,i=(y*state.width)*4;x<state.width;x++,i+=4){
+        const mx=Math.min(matteCanvas.width-1,Math.floor(x*matteCanvas.width/state.width));
+        const my=Math.min(matteCanvas.height-1,Math.floor(y*matteCanvas.height/state.height)),mi=(my*matteCanvas.width+mx)*4;
+        const a=Math.round(mp[mi]*.299+mp[mi+1]*.587+mp[mi+2]*.114);
+        out[i]=out[i+1]=out[i+2]=255;out[i+3]=Math.round(base[i+3]*(1-mix)+a*mix);
+      }
+    }
+    ctx.putImageData(pixels,0,0);state.baseMask=refined;state.mask=createCanvas(state.width,state.height);
+    state.mask.getContext("2d").drawImage(refined,0,0);applyEdgeCleanup();decontaminateEdgeColors();render();
+    $("previewStatus").textContent="Detail rambut diperhalus";toast("Matting rambut selesai. Periksa detail sebelum ekspor.");
+  }catch(error){console.error(error);toast("Matting rambut tidak berhasil: "+(error.message||"coba lagi."))}
+  finally{finishProgress();setBusy(false);button.disabled=!state.mask;enableExports()}
 }
 async function loadModel(){
   if(state.remover)return state.remover;
@@ -119,7 +151,7 @@ $("backgroundInput").addEventListener("change",async e=>{const file=e.target.fil
 $("eraseMode").addEventListener("click",()=>{state.mode="erase";$("eraseMode").classList.add("active");$("restoreMode").classList.remove("active")});
 $("restoreMode").addEventListener("click",()=>{state.mode="restore";$("restoreMode").classList.add("active");$("eraseMode").classList.remove("active")});
 $("brushSize").addEventListener("input",e=>{state.brushSize=Number(e.target.value);$("brushValue").textContent=state.brushSize+" px"});let edgeTuneTimer=null;function scheduleEdgeTune(){clearTimeout(edgeTuneTimer);edgeTuneTimer=setTimeout(()=>{if(!state.baseMask)return;state.mask=createCanvas(state.width,state.height);state.mask.getContext("2d").drawImage(state.baseMask,0,0);applyEdgeCleanup();decontaminateEdgeColors();render()},180)}$("edgeCleanup").addEventListener("input",e=>{state.edgeCleanup=Number(e.target.value);$("edgeCleanupValue").textContent=state.edgeCleanup+"%";scheduleEdgeTune()});$("decontaminate").addEventListener("input",e=>{state.decontaminate=Number(e.target.value);$("decontaminateValue").textContent=state.decontaminate+"%";scheduleEdgeTune()});
-$("resetMask").addEventListener("click",resetMask);
+$("hairMattingButton").addEventListener("click",refineHairMatting);$("resetMask").addEventListener("click",resetMask);
 brush.addEventListener("pointerdown",onBrushDown);brush.addEventListener("pointermove",onBrushMove);brush.addEventListener("pointerup",onBrushUp);brush.addEventListener("pointercancel",onBrushUp);
 $("exportPng").addEventListener("click",exportPng);$("exportJpg").addEventListener("click",exportJpg);$("exportPdf").addEventListener("click",exportPdf);
 $("fitButton").addEventListener("click",()=>{if(state.source){showEditor();toast("Pratinjau disesuaikan ke area.")}});
