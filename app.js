@@ -44,13 +44,13 @@ async function decontaminateEdgeColors(){
   if(strength<=0){state.cleanedSource=sourceCanvas;return}
   // Sample the original background farther outside the silhouette. A wider
   // multi-direction search is important for fine hair and colored edge spill.
-  const rings=[3,6,10,14],directions=16;
+  const rings=[4,9],directions=8;
   for(let y=14;y<height-14;y++){
     if((y&7)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
     let i=(y*width+14)*4;
     for(let x=14;x<width-14;x++,i+=4){
       const a=alpha[i+3]/255;
-      if(a<0.035||a>0.995)continue;
+      if(a<0.035||a>0.985)continue;
       let bgR=0,bgG=0,bgB=0,total=0,samples=0;
       for(const radius of rings){
         bgR=bgG=bgB=total=samples=0;
@@ -58,7 +58,7 @@ async function decontaminateEdgeColors(){
           const angle=(Math.PI*2*step)/directions;
           const dx=Math.round(Math.cos(angle)*radius),dy=Math.round(Math.sin(angle)*radius);
           const ni=i+(dy*width+dx)*4,na=alpha[ni+3]/255;
-          if(na>0.045)continue;
+          if(na>0.06)continue;
           const weight=1/(radius*radius);
           bgR+=src[ni]*weight;bgG+=src[ni+1]*weight;bgB+=src[ni+2]*weight;
           total+=weight;samples++;
@@ -101,7 +101,7 @@ async function refineHairMatting({automatic=false}={}){
       ]);
     }
     setProgress(42,"Menganalisis helaian rambut dan tepi subjek…");
-    const scale=Math.min(1,1280/Math.max(state.width,state.height));
+    const scale=Math.min(1,1024/Math.max(state.width,state.height));
     const w=Math.max(1,Math.round(state.width*scale)),h=Math.max(1,Math.round(state.height*scale));
     const input=createCanvas(w,h);
     input.getContext("2d").drawImage(state.source,0,0,w,h);
@@ -130,14 +130,12 @@ async function refineHairMatting({automatic=false}={}){
         const modnetAlpha=Math.max(0,Math.min(255,value));
         const baseAlpha=base[i+3];
         let fusedAlpha;
-        if(baseAlpha>=248){
-          fusedAlpha=255;
-        }else if(baseAlpha<=7){
-          // Recover wispy hair only when MODNet has meaningful foreground confidence.
-          fusedAlpha=modnetAlpha>=10?Math.round(modnetAlpha*.82):0;
+        if(baseAlpha<=6){
+          // Reject weak background predictions while retaining confident fine hair.
+          fusedAlpha=modnetAlpha>=35?Math.round(modnetAlpha*.72):0;
         }else{
-          // The original segmentation anchors the contour while MODNet supplies edge detail.
-          fusedAlpha=Math.round(baseAlpha*.18+modnetAlpha*.82);
+          // Let MODNet soften hard segmentation edges as well as recover hair strands.
+          fusedAlpha=Math.round(baseAlpha*.28+modnetAlpha*.72);
         }
         out[i]=out[i+1]=out[i+2]=255;
         out[i+3]=Math.max(0,Math.min(255,fusedAlpha));
