@@ -120,6 +120,7 @@ async function refineHairMatting({automatic=false}={}){
     // MODNet is the dedicated portrait matting model; use its alpha directly for natural hair edges.
     const mix=1,channels=matte.channels;
     for(let y=0;y<state.height;y++){
+      if((y&7)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
       const my=Math.min(matte.height-1,Math.floor(y*matte.height/state.height));
       for(let x=0,i=(y*state.width)*4;x<state.width;x++,i+=4){
         const mx=Math.min(matte.width-1,Math.floor(x*matte.width/state.width));
@@ -207,7 +208,7 @@ function paintStroke(point){if(!state.mask||!state.baseMask)return;const ctx=sta
 function onBrushDown(e){if(!state.mask)return;state.pointerDown=true;brush.setPointerCapture(e.pointerId);state.lastPoint=null;const p=getCanvasPoint(e);paintStroke(p);state.lastPoint=p;render()}
 function onBrushMove(e){if(!state.pointerDown)return;const p=getCanvasPoint(e);paintStroke(p);state.lastPoint=p;render()}
 async function onBrushUp(){state.pointerDown=false;state.lastPoint=null;if(state.mask){await decontaminateEdgeColors();render()}}
-async function loadMainPhoto(file){if(!file||!/^image\/(jpeg|png|webp)$/.test(file.type)){toast("Pilih foto JPG, PNG, atau WebP.");return}try{const loaded=await imageFromFile(file);if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.source=loaded.img;state.sourceUrl=loaded.url;state.width=loaded.img.naturalWidth;state.height=loaded.img.naturalHeight;state.fileName=(file.name||"rebag-photo").replace(/\.[^.]+$/,"").replace(/[^\w-]+/g,"-");state.mask=null;state.baseMask=null;state.cleanedSource=null;$("hairMattingButton").disabled=true;$("fileMeta").textContent=file.name+" • "+state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent="Foto siap diedit";showEditor();toast("Foto diunggah. AI menghapus background dan akan merapikan detail rambut otomatis…");await removeBackground({autoRefine:false})}catch(e){toast(e.message)}}
+async function loadMainPhoto(file){if(!file||!/^image\/(jpeg|png|webp)$/.test(file.type)){toast("Pilih foto JPG, PNG, atau WebP.");return}try{const loaded=await imageFromFile(file);if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.source=loaded.img;state.sourceUrl=loaded.url;state.width=loaded.img.naturalWidth;state.height=loaded.img.naturalHeight;state.fileName=(file.name||"rebag-photo").replace(/\.[^.]+$/,"").replace(/[^\w-]+/g,"-");state.mask=null;state.baseMask=null;state.cleanedSource=null;$("hairMattingButton").disabled=true;$("fileMeta").textContent=file.name+" • "+state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent="Foto siap diedit";showEditor();toast("Foto diunggah. AI menghapus background lalu menjalankan matting rambut otomatis…");await removeBackground({autoRefine:true})}catch(e){toast(e.message)}}
 $("photoInput").addEventListener("change",e=>loadMainPhoto(e.target.files[0]));
 $("dropzone").addEventListener("dragover",e=>{e.preventDefault();$("dropzone").classList.add("dragover")});
 $("dropzone").addEventListener("dragleave",()=>$("dropzone").classList.remove("dragover"));
