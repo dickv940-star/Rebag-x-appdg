@@ -1,6 +1,6 @@
 import { pipeline, env, AutoModel, AutoProcessor, RawImage } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2";
 const $ = id => document.getElementById(id);
-const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,edgeCleanup:42,decontaminate:100,cleanedSource:null,remover:null,ben2Remover:null,currentModel:"ormbg",mattingModel:null,mattingProcessor:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
+const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,edgeCleanup:42,decontaminate:100,cleanedSource:null,remover:null,ben2Remover:null,currentModel:"ormbg",mattingModel:null,mattingProcessor:null,edgeWorker:null,edgeWorkerPending:new Map(),edgeWorkerTask:0,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
 const preview=$("previewCanvas"),brush=$("brushCanvas"),previewCtx=preview.getContext("2d",{willReadFrequently:true}),brushCtx=brush.getContext("2d"),toastEl=$("toast");
 function toast(message){toastEl.textContent=message;toastEl.classList.add("show");clearTimeout(toast._timer);toast._timer=setTimeout(()=>toastEl.classList.remove("show"),3200)}
 function setBusy(busy,label){state.busy=busy;$("removeButton").disabled=busy||!state.source;$("ben2Button").disabled=busy||!state.source;$("removeButton").textContent=busy?(label||"Memproses…"):"✦ Hapus background otomatis"}
@@ -24,7 +24,7 @@ async function applyEdgeCleanup(){
   const effectiveStrength=state.currentModel==="ben2"?strength*.25:strength;
   const cutoff=0.012+effectiveStrength*0.075,exponent=1+effectiveStrength*.42;
   for(let y=0;y<height;y++){
-    if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
+    if((y&3)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
     const rowStart=y*rowStride;
     for(let x=0,i=rowStart;x<width;x++,i+=4){
       const alpha=originalAlpha[y*width+x]/255;
@@ -34,9 +34,9 @@ async function applyEdgeCleanup(){
       // Spend neighborhood work only on translucent edge pixels.
       if(alpha<.22){
         let nearby=0;
-        for(let dy=-2;dy<=2;dy++){
+        for(let dy=-1;dy<=1;dy++){
           const yy=y+dy;if(yy<0||yy>=height)continue;
-          for(let dx=-2;dx<=2;dx++){
+          for(let dx=-1;dx<=1;dx++){
             const xx=x+dx;if(xx<0||xx>=width)continue;
             const value=originalAlpha[yy*width+xx]/255;
             if(value>nearby)nearby=value;
@@ -50,60 +50,60 @@ async function applyEdgeCleanup(){
   }
   target.putImageData(source,0,0);
 }
+function ensureEdgeWorker(){
+  if(state.edgeWorker)return state.edgeWorker;
+  if(typeof Worker==="undefined")return null;
+  const worker=new Worker(new URL("./edge-worker.js",import.meta.url));
+  worker.onmessage=event=>{
+    const {id,buffer,error}=event.data||{};
+    const pending=state.edgeWorkerPending?.get(id);
+    if(!pending)return;
+    state.edgeWorkerPending.delete(id);
+    if(error)pending.reject(new Error(error));
+    else pending.resolve(buffer);
+  };
+  worker.onerror=event=>{
+    const error=new Error(event.message||"Worker pemrosesan tepi gagal.");
+    for(const pending of state.edgeWorkerPending?.values()||[])pending.reject(error);
+    state.edgeWorkerPending?.clear();
+    worker.terminate();state.edgeWorker=null;
+  };
+  state.edgeWorker=worker;
+  state.edgeWorkerPending=state.edgeWorkerPending||new Map();
+  state.edgeWorkerTask=state.edgeWorkerTask||0;
+  return worker;
+}
+function runEdgeWorker(payload,transfer){
+  const worker=ensureEdgeWorker();
+  if(!worker)return Promise.reject(new Error("Web Worker tidak tersedia."));
+  const id=++state.edgeWorkerTask;
+  return new Promise((resolve,reject)=>{
+    state.edgeWorkerPending.set(id,{resolve,reject});
+    try{worker.postMessage({id,...payload},transfer)}
+    catch(error){state.edgeWorkerPending.delete(id);reject(error)}
+  });
+}
 async function decontaminateEdgeColors(){
   if(!state.source||!state.mask)return;
-  const width=state.width,height=state.height;
+  const width=state.width,height=state.height,strength=state.decontaminate/100;
   const sourceCanvas=createCanvas(width,height),ctx=sourceCanvas.getContext("2d",{willReadFrequently:true});
   ctx.drawImage(state.source,0,0,width,height);
-  const image=ctx.getImageData(0,0,width,height);
-  const alpha=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height).data;
-  const src=image.data,strength=state.decontaminate/100;
   if(strength<=0){state.cleanedSource=sourceCanvas;return}
-  // Estimate the old background independently in each direction. Unlike fixed-radius
-  // sampling, ray sampling finds the nearest truly transparent source pixel even when
-  // the silhouette is irregular or the hair is only a few pixels wide.
-  const directions=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
-  const maxRadius=24,limit=Math.min(width,height);
-  if(limit<3){state.cleanedSource=sourceCanvas;return}
-  const samplesR=[],samplesG=[],samplesB=[];
-  const median=arr=>{arr.sort((a,b)=>a-b);return arr[arr.length>>1]};
-  for(let y=0;y<height;y++){
-    if((y&7)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
-    for(let x=0,i=(y*width)*4;x<width;x++,i+=4){
-      const a=alpha[i+3]/255;
-      if(a<.012||a>.992)continue;
-      samplesR.length=samplesG.length=samplesB.length=0;
-      for(const [dx,dy] of directions){
-        for(let radius=1;radius<=maxRadius;radius++){
-          const sx=x+dx*radius,sy=y+dy*radius;
-          if(sx<0||sx>=width||sy<0||sy>=height)break;
-          const si=(sy*width+sx)*4;
-          if(alpha[si+3]<=8){
-            samplesR.push(src[si]);samplesG.push(src[si+1]);samplesB.push(src[si+2]);
-            break;
-          }
-        }
-      }
-      // Require several independent directions to avoid sampling through a gap
-      // into foreground/background details and introducing a new color cast.
-      if(samplesR.length<3)continue;
-      const br=median(samplesR),bg=median(samplesG),bb=median(samplesB);
-      const denom=Math.max(.045,a);
-      const fr=Math.max(0,Math.min(255,(src[i]-(1-a)*br)/denom));
-      const fg=Math.max(0,Math.min(255,(src[i+1]-(1-a)*bg)/denom));
-      const fb=Math.max(0,Math.min(255,(src[i+2]-(1-a)*bb)/denom));
-      const confidence=Math.min(1,samplesR.length/6);
-      // Keep correction deliberately softer for nearly transparent strands, where
-      // inverse compositing amplifies sensor noise and JPEG artifacts.
-      const alphaSafety=Math.min(1,Math.max(.42,a/.10));
-      const correction=Math.min(.92,strength*confidence*alphaSafety);
-      src[i]=Math.round(src[i]+(fr-src[i])*correction);
-      src[i+1]=Math.round(src[i+1]+(fg-src[i+1])*correction);
-      src[i+2]=Math.round(src[i+2]+(fb-src[i+2])*correction);
-    }
+  const sourceData=ctx.getImageData(0,0,width,height);
+  const maskData=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height);
+  try{
+    const buffer=await runEdgeWorker({
+      type:"decontaminate",width,height,strength,
+      sourceBuffer:sourceData.data.buffer,
+      alphaBuffer:maskData.data.buffer
+    },[sourceData.data.buffer,maskData.data.buffer]);
+    const corrected=new ImageData(new Uint8ClampedArray(buffer),width,height);
+    ctx.putImageData(corrected,0,0);
+    state.cleanedSource=sourceCanvas;
+  }catch(error){
+    console.warn("Worker edge cleanup tidak tersedia; mempertahankan warna foto asli.",error);
+    state.cleanedSource=sourceCanvas;
   }
-  ctx.putImageData(image,0,0);
-  state.cleanedSource=sourceCanvas;
 }
 async function refineHairMatting({automatic=false}={}){
   if(!state.source||!state.mask||state.busy)return;
@@ -234,8 +234,8 @@ async function loadBen2Model(){
       }catch(error){console.warn("BEN2 WebGPU gagal; mencoba WASM.",error)}
     }
     if(!remover){
-      setProgress(28,"Memuat BEN2 mode kompatibel (WASM FP16)…");
-      remover=await pipeline("background-removal","onnx-community/BEN2-ONNX",{device:"wasm",dtype:"fp16"});
+      setProgress(28,"Memuat BEN2 mode kompatibel (WASM FP32)…");
+      remover=await pipeline("background-removal","onnx-community/BEN2-ONNX",{device:"wasm",dtype:"fp32"});
     }
     state.ben2Remover=remover;
     return remover;
@@ -252,7 +252,7 @@ async function removeBackground({autoRefine=false,model="ormbg"}={}){
     const inferenceCanvas=createCanvas(inferenceWidth,inferenceHeight);
     inferenceCanvas.getContext("2d").drawImage(state.source,0,0,inferenceWidth,inferenceHeight);
     const inferenceBlob=await new Promise((resolve,reject)=>inferenceCanvas.toBlob(blob=>blob?resolve(blob):reject(new Error("Gagal menyiapkan gambar untuk AI.")),"image/png"));
-    const result=model==="ben2"?await remover([inferenceBlob]):await remover(inferenceBlob);
+    const result=await remover(inferenceBlob);
     const cutout=Array.isArray(result)?result[0]:result;
     if(!cutout)throw new Error("AI tidak menghasilkan mask. Coba foto lain.");
     let cutoutCanvas;
