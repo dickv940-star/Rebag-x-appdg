@@ -234,8 +234,8 @@ async function loadBen2Model(){
       }catch(error){console.warn("BEN2 WebGPU gagal; mencoba WASM.",error)}
     }
     if(!remover){
-      setProgress(28,"Memuat BEN2 mode kompatibel (WASM)…");
-      remover=await pipeline("background-removal","onnx-community/BEN2-ONNX",{device:"wasm",dtype:"q8"});
+      setProgress(28,"Memuat BEN2 mode kompatibel (WASM FP16)…");
+      remover=await pipeline("background-removal","onnx-community/BEN2-ONNX",{device:"wasm",dtype:"fp16"});
     }
     state.ben2Remover=remover;
     return remover;
@@ -287,7 +287,8 @@ async function removeBackground({autoRefine=false,model="ormbg"}={}){
   }catch(error){
     console.error(error);
     finishProgress();
-    toast((model==="ben2"?"BEN2 gagal: ":"")+(error.message||"Gagal memproses foto. Periksa koneksi dan coba lagi."));
+    const detail=error&&error.message?error.message:String(error);
+    toast((model==="ben2"?"BEN2 gagal: ":"")+detail+" — coba muat ulang halaman dan periksa koneksi model.");
   }finally{
     setBusy(false);
     enableExports();
