@@ -18,27 +18,31 @@ async function applyEdgeCleanup(){
   const source=state.baseMask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height);
   const target=state.mask.getContext("2d"),pixels=source.data,strength=state.edgeCleanup/100;
   const width=state.width,height=state.height,rowStride=width*4;
-  // Remove isolated low-alpha haze, while retaining strands connected to foreground.
+  const originalAlpha=new Uint8ClampedArray(width*height);
+  for(let p=0,j=3;p<originalAlpha.length;p++,j+=4)originalAlpha[p]=pixels[j];
   const cutoff=0.012+strength*0.075,exponent=1+strength*.42;
   for(let y=0;y<height;y++){
     if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
     const rowStart=y*rowStride;
     for(let x=0,i=rowStart;x<width;x++,i+=4){
-      const alpha=pixels[i+3]/255;
+      const alpha=originalAlpha[y*width+x]/255;
       if(alpha<=0.008){pixels[i+3]=0;continue}
       if(strength===0)continue;
-      let nearby=0;
-      for(let dy=-2;dy<=2;dy++){
-        const yy=y+dy;if(yy<0||yy>=height)continue;
-        for(let dx=-2;dx<=2;dx++){
-          const xx=x+dx;if(xx<0||xx>=width)continue;
-          const ni=(yy*width+xx)*4+3;
-          if(pixels[ni]/255>nearby)nearby=pixels[ni]/255;
-        }
-      }
       let normalized=Math.pow(Math.max(0,Math.min(1,(alpha-cutoff)/(1-cutoff))),exponent);
-      if(alpha<.16&&nearby<.48)normalized*=Math.max(.12,nearby/.48);
-      if(alpha<.045&&nearby<.2)normalized=0;
+      // Spend neighborhood work only on translucent edge pixels.
+      if(alpha<.22){
+        let nearby=0;
+        for(let dy=-2;dy<=2;dy++){
+          const yy=y+dy;if(yy<0||yy>=height)continue;
+          for(let dx=-2;dx<=2;dx++){
+            const xx=x+dx;if(xx<0||xx>=width)continue;
+            const value=originalAlpha[yy*width+xx]/255;
+            if(value>nearby)nearby=value;
+          }
+        }
+        if(alpha<.16&&nearby<.48)normalized*=Math.max(.12,nearby/.48);
+        if(alpha<.045&&nearby<.2)normalized=0;
+      }
       pixels[i+3]=Math.round(normalized*255);
     }
   }
