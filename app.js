@@ -57,15 +57,20 @@ async function decontaminateEdgeColors(){
   const alpha=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height).data;
   const src=image.data,strength=state.decontaminate/100;
   if(strength<=0){state.cleanedSource=sourceCanvas;return}
+  // Search nearby transparent pixels at several distances. A shorter first
+  // radius is important for fine hair, where the old background is very local.
   const offsets=[[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
-  const radii=[4,8,14,22],samplesR=[],samplesG=[],samplesB=[];
-  if(width<=44||height<=44){state.cleanedSource=sourceCanvas;return}
-  for(let y=22;y<height-22;y++){
+  const radii=[2,3,5,8,12,18],maxRadius=18;
+  const samplesR=[],samplesG=[],samplesB=[];
+  if(width<=maxRadius*2||height<=maxRadius*2){state.cleanedSource=sourceCanvas;return}
+  const median=arr=>{arr.sort((a,b)=>a-b);return arr[arr.length>>1]};
+  for(let y=maxRadius;y<height-maxRadius;y++){
     if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
-    let i=(y*width+22)*4;
-    for(let x=22;x<width-22;x++,i+=4){
+    let i=(y*width+maxRadius)*4;
+    for(let x=maxRadius;x<width-maxRadius;x++,i+=4){
       const a=alpha[i+3]/255;
-      if(a<.035||a>.985)continue;
+      // Include the faintest retained strands, but leave fully opaque interior alone.
+      if(a<.012||a>.992)continue;
       let found=false;
       for(const radius of radii){
         samplesR.length=samplesG.length=samplesB.length=0;
@@ -74,16 +79,19 @@ async function decontaminateEdgeColors(){
           if(alpha[ni+3]>5)continue;
           samplesR.push(src[ni]);samplesG.push(src[ni+1]);samplesB.push(src[ni+2]);
         }
-        if(samplesR.length>=3){found=true;break}
+        if(samplesR.length>=2){found=true;break}
       }
       if(!found)continue;
-      const median=arr=>{arr.sort((a,b)=>a-b);return arr[arr.length>>1]};
       const br=median(samplesR),bg=median(samplesG),bb=median(samplesB);
-      const denom=Math.max(.12,a),confidence=Math.min(1,samplesR.length/6);
-      const stability=Math.min(1,a/.22),correction=Math.min(1,strength*confidence*stability);
+      // Unmix the original foreground/background blend. Keep a conservative
+      // floor for very translucent hair to avoid amplifying sensor noise.
+      const denom=Math.max(.10,a);
       const fr=Math.max(0,Math.min(255,(src[i]-(1-a)*br)/denom));
       const fg=Math.max(0,Math.min(255,(src[i+1]-(1-a)*bg)/denom));
       const fb=Math.max(0,Math.min(255,(src[i+2]-(1-a)*bb)/denom));
+      const confidence=Math.min(1,samplesR.length/5);
+      const lowAlphaProtection=Math.min(1,Math.max(.32,a/.10));
+      const correction=Math.min(1,strength*confidence*lowAlphaProtection);
       src[i]=Math.round(src[i]+(fr-src[i])*correction);
       src[i+1]=Math.round(src[i+1]+(fg-src[i+1])*correction);
       src[i+2]=Math.round(src[i+2]+(fb-src[i+2])*correction);
