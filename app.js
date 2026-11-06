@@ -42,21 +42,22 @@ async function decontaminateEdgeColors(){
   const alpha=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height).data;
   const src=image.data,strength=state.decontaminate/100;
   if(strength<=0){state.cleanedSource=sourceCanvas;return}
-  // Work only on semi-transparent boundary pixels; opaque subject pixels are
-  // skipped immediately. A compact 8-direction sample avoids the old costly
-  // two-ring/16-sample pass over every pixel.
+  // Sample only pixels with a complete 6px neighborhood. This prevents
+  // row-wrap reads at image borders and avoids expensive work on opaque areas.
   const offsets=[[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
-  for(let y=1;y<height-1;y++){
+  const minRadius=3,maxRadius=6;
+  if(width<=maxRadius*2||height<=maxRadius*2){state.cleanedSource=sourceCanvas;return}
+  for(let y=maxRadius;y<height-maxRadius;y++){
     if((y&31)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
-    let i=(y*width+1)*4;
-    for(let x=1;x<width-1;x++,i+=4){
+    let i=(y*width+maxRadius)*4;
+    for(let x=maxRadius;x<width-maxRadius;x++,i+=4){
       const a=alpha[i+3]/255;
       if(a<0.035||a>0.985)continue;
       let r=0,g=0,b=0,total=0,samples=0;
-      for(let radius of [3,6]){
+      for(const radius of [minRadius,maxRadius]){
         r=g=b=total=samples=0;
         for(let k=0;k<8;k++){
-          const [dx,dy]=offsets[k],ni=i+(dy*width+dx)*radius*4;
+          const [dx,dy]=offsets[k],nx=x+dx*radius,ny=y+dy*radius,ni=(ny*width+nx)*4;
           if(alpha[ni+3]/255>0.06)continue;
           const weight=1/(radius*radius);
           r+=src[ni]*weight;g+=src[ni+1]*weight;b+=src[ni+2]*weight;
@@ -209,7 +210,7 @@ function paintStroke(point){if(!state.mask||!state.baseMask)return;const ctx=sta
 function onBrushDown(e){if(!state.mask)return;state.pointerDown=true;brush.setPointerCapture(e.pointerId);state.lastPoint=null;const p=getCanvasPoint(e);paintStroke(p);state.lastPoint=p;render()}
 function onBrushMove(e){if(!state.pointerDown)return;const p=getCanvasPoint(e);paintStroke(p);state.lastPoint=p;render()}
 async function onBrushUp(){state.pointerDown=false;state.lastPoint=null;if(state.mask){await decontaminateEdgeColors();render()}}
-async function loadMainPhoto(file){if(!file||!/^image\/(jpeg|png|webp)$/.test(file.type)){toast("Pilih foto JPG, PNG, atau WebP.");return}try{const loaded=await imageFromFile(file);if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.source=loaded.img;state.sourceUrl=loaded.url;state.width=loaded.img.naturalWidth;state.height=loaded.img.naturalHeight;state.fileName=(file.name||"rebag-photo").replace(/\.[^.]+$/,"").replace(/[^\w-]+/g,"-");state.mask=null;state.baseMask=null;state.cleanedSource=null;$("hairMattingButton").disabled=true;$("fileMeta").textContent=file.name+" • "+state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent="Foto siap diedit";showEditor();toast("Foto diunggah. AI menghapus background lalu menjalankan matting rambut otomatis…");await removeBackground()}catch(e){toast(e.message)}}
+async function loadMainPhoto(file){if(!file||!/^image\/(jpeg|png|webp)$/.test(file.type)){toast("Pilih foto JPG, PNG, atau WebP.");return}try{const loaded=await imageFromFile(file);if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.source=loaded.img;state.sourceUrl=loaded.url;state.width=loaded.img.naturalWidth;state.height=loaded.img.naturalHeight;state.fileName=(file.name||"rebag-photo").replace(/\.[^.]+$/,"").replace(/[^\w-]+/g,"-");state.mask=null;state.baseMask=null;state.cleanedSource=null;$("hairMattingButton").disabled=true;$("fileMeta").textContent=file.name+" • "+state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent="Foto siap diedit";showEditor();toast("Foto diunggah. AI menghapus background; perapian rambut lanjutan tersedia lewat tombol manual.");await removeBackground()}catch(e){toast(e.message)}}
 $("photoInput").addEventListener("change",e=>loadMainPhoto(e.target.files[0]));
 $("dropzone").addEventListener("dragover",e=>{e.preventDefault();$("dropzone").classList.add("dragover")});
 $("dropzone").addEventListener("dragleave",()=>$("dropzone").classList.remove("dragover"));
