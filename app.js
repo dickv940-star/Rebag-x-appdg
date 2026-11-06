@@ -24,7 +24,7 @@ async function applyEdgeCleanup(){
   const effectiveStrength=state.currentModel==="ben2"?strength*.25:strength;
   const cutoff=0.012+effectiveStrength*0.075,exponent=1+effectiveStrength*.42;
   for(let y=0;y<height;y++){
-    if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
+    if((y&3)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
     const rowStart=y*rowStride;
     for(let x=0,i=rowStart;x<width;x++,i+=4){
       const alpha=originalAlpha[y*width+x]/255;
@@ -34,9 +34,9 @@ async function applyEdgeCleanup(){
       // Spend neighborhood work only on translucent edge pixels.
       if(alpha<.22){
         let nearby=0;
-        for(let dy=-2;dy<=2;dy++){
+        for(let dy=-1;dy<=1;dy++){
           const yy=y+dy;if(yy<0||yy>=height)continue;
-          for(let dx=-2;dx<=2;dx++){
+          for(let dx=-1;dx<=1;dx++){
             const xx=x+dx;if(xx<0||xx>=width)continue;
             const value=originalAlpha[yy*width+xx]/255;
             if(value>nearby)nearby=value;
@@ -63,7 +63,7 @@ async function decontaminateEdgeColors(){
   // sampling, ray sampling finds the nearest truly transparent source pixel even when
   // the silhouette is irregular or the hair is only a few pixels wide.
   const directions=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
-  const maxRadius=24,limit=Math.min(width,height);
+  const sampleRadii=[1,2,3,4,6,8,12,16,22,30],limit=Math.min(width,height);
   if(limit<3){state.cleanedSource=sourceCanvas;return}
   const samplesR=[],samplesG=[],samplesB=[];
   const median=arr=>{arr.sort((a,b)=>a-b);return arr[arr.length>>1]};
@@ -74,7 +74,7 @@ async function decontaminateEdgeColors(){
       if(a<.012||a>.992)continue;
       samplesR.length=samplesG.length=samplesB.length=0;
       for(const [dx,dy] of directions){
-        for(let radius=1;radius<=maxRadius;radius++){
+        for(const radius of sampleRadii){
           const sx=x+dx*radius,sy=y+dy*radius;
           if(sx<0||sx>=width||sy<0||sy>=height)break;
           const si=(sy*width+sx)*4;
@@ -235,7 +235,7 @@ async function loadBen2Model(){
     }
     if(!remover){
       setProgress(28,"Memuat BEN2 mode kompatibel (WASM FP16)…");
-      remover=await pipeline("background-removal","onnx-community/BEN2-ONNX",{device:"wasm",dtype:"fp16"});
+      remover=await pipeline("background-removal","onnx-community/BEN2-ONNX",{device:"wasm",dtype:"fp32"});
     }
     state.ben2Remover=remover;
     return remover;
@@ -252,7 +252,7 @@ async function removeBackground({autoRefine=false,model="ormbg"}={}){
     const inferenceCanvas=createCanvas(inferenceWidth,inferenceHeight);
     inferenceCanvas.getContext("2d").drawImage(state.source,0,0,inferenceWidth,inferenceHeight);
     const inferenceBlob=await new Promise((resolve,reject)=>inferenceCanvas.toBlob(blob=>blob?resolve(blob):reject(new Error("Gagal menyiapkan gambar untuk AI.")),"image/png"));
-    const result=model==="ben2"?await remover([inferenceBlob]):await remover(inferenceBlob);
+    const result=await remover(inferenceBlob);
     const cutout=Array.isArray(result)?result[0]:result;
     if(!cutout)throw new Error("AI tidak menghasilkan mask. Coba foto lain.");
     let cutoutCanvas;
