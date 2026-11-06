@@ -20,7 +20,9 @@ async function applyEdgeCleanup(){
   const width=state.width,height=state.height,rowStride=width*4;
   const originalAlpha=new Uint8ClampedArray(width*height);
   for(let p=0,j=3;p<originalAlpha.length;p++,j+=4)originalAlpha[p]=pixels[j];
-  // BEN2 already returns a soft alpha matte; use gentler cleanup to protect fine strands.\n  const effectiveStrength=state.currentModel==="ben2"?strength*.25:strength;\n  const cutoff=0.012+effectiveStrength*0.075,exponent=1+effectiveStrength*.42;
+  // BEN2 already returns a soft alpha matte; use gentler cleanup to protect fine strands.
+  const effectiveStrength=state.currentModel==="ben2"?strength*.25:strength;
+  const cutoff=0.012+effectiveStrength*0.075,exponent=1+effectiveStrength*.42;
   for(let y=0;y<height;y++){
     if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
     const rowStart=y*rowStride;
@@ -313,7 +315,8 @@ $("photoInput").addEventListener("change",e=>loadMainPhoto(e.target.files[0]));
 $("dropzone").addEventListener("dragover",e=>{e.preventDefault();$("dropzone").classList.add("dragover")});
 $("dropzone").addEventListener("dragleave",()=>$("dropzone").classList.remove("dragover"));
 $("dropzone").addEventListener("drop",e=>{e.preventDefault();$("dropzone").classList.remove("dragover");loadMainPhoto(e.dataTransfer.files[0])});
-$("removeButton").addEventListener("click",()=>removeBackground({model:"ormbg"}));\n$("ben2Button").addEventListener("click",()=>removeBackground({model:"ben2"}));
+$("removeButton").addEventListener("click",()=>removeBackground({model:"ormbg"}));
+$("ben2Button").addEventListener("click",()=>removeBackground({model:"ben2"}));
 document.querySelectorAll(".swatch").forEach(b=>{b.addEventListener("pointerenter",()=>setBackground(b.dataset.bg));b.addEventListener("click",()=>setBackground(b.dataset.bg))});
 bindLivePicker($("saturationPicker"),"saturation");bindLivePicker($("huePicker"),"hue");applyLivePicker();
 $("backgroundInput").addEventListener("change",async e=>{const file=e.target.files[0];if(!file)return;try{const loaded=await imageFromFile(file);state.backgroundImage=loaded.img;$("backgroundImageMeta").textContent="Background: "+file.name;setBackground(loaded.img);toast("Background gambar berhasil diterapkan.")}catch(err){toast(err.message)}});
