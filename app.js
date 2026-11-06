@@ -60,7 +60,7 @@ async function decontaminateEdgeColors(){
   // Search nearby transparent pixels at several distances. A shorter first
   // radius is important for fine hair, where the old background is very local.
   const offsets=[[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
-  const radii=[2,3,5,8,12,18],maxRadius=18;
+  const radii=[1,2,3,5,8,12,18],maxRadius=18;
   const samplesR=[],samplesG=[],samplesB=[];
   if(width<=maxRadius*2||height<=maxRadius*2){state.cleanedSource=sourceCanvas;return}
   const median=arr=>{arr.sort((a,b)=>a-b);return arr[arr.length>>1]};
@@ -83,14 +83,15 @@ async function decontaminateEdgeColors(){
       }
       if(!found)continue;
       const br=median(samplesR),bg=median(samplesG),bb=median(samplesB);
-      // Unmix the original foreground/background blend. Keep a conservative
-      // floor for very translucent hair to avoid amplifying sensor noise.
-      const denom=Math.max(.10,a);
+      // Unmix the original foreground/background blend. A lower denominator
+      // removes more residual spill on faint strands; the correction floor
+      // below limits noise amplification when alpha is extremely small.
+      const denom=Math.max(.035,a);
       const fr=Math.max(0,Math.min(255,(src[i]-(1-a)*br)/denom));
       const fg=Math.max(0,Math.min(255,(src[i+1]-(1-a)*bg)/denom));
       const fb=Math.max(0,Math.min(255,(src[i+2]-(1-a)*bb)/denom));
       const confidence=Math.min(1,samplesR.length/5);
-      const lowAlphaProtection=Math.min(1,Math.max(.32,a/.10));
+      const lowAlphaProtection=Math.min(1,Math.max(.58,a/.08));
       const correction=Math.min(1,strength*confidence*lowAlphaProtection);
       src[i]=Math.round(src[i]+(fr-src[i])*correction);
       src[i+1]=Math.round(src[i+1]+(fg-src[i+1])*correction);
