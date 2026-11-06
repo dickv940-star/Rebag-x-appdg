@@ -59,42 +59,44 @@ async function decontaminateEdgeColors(){
   const alpha=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height).data;
   const src=image.data,strength=state.decontaminate/100;
   if(strength<=0){state.cleanedSource=sourceCanvas;return}
-  // Search nearby transparent pixels at several distances. A shorter first
-  // radius is important for fine hair, where the old background is very local.
-  const offsets=[[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
-  const radii=[1,2,3,5,8,12,18],maxRadius=18;
+  // Estimate the old background independently in each direction. Unlike fixed-radius
+  // sampling, ray sampling finds the nearest truly transparent source pixel even when
+  // the silhouette is irregular or the hair is only a few pixels wide.
+  const directions=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
+  const maxRadius=24,limit=Math.min(width,height);
+  if(limit<3){state.cleanedSource=sourceCanvas;return}
   const samplesR=[],samplesG=[],samplesB=[];
-  if(width<=maxRadius*2||height<=maxRadius*2){state.cleanedSource=sourceCanvas;return}
   const median=arr=>{arr.sort((a,b)=>a-b);return arr[arr.length>>1]};
-  for(let y=maxRadius;y<height-maxRadius;y++){
-    if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
-    let i=(y*width+maxRadius)*4;
-    for(let x=maxRadius;x<width-maxRadius;x++,i+=4){
+  for(let y=0;y<height;y++){
+    if((y&7)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
+    for(let x=0,i=(y*width)*4;x<width;x++,i+=4){
       const a=alpha[i+3]/255;
-      // Include the faintest retained strands, but leave fully opaque interior alone.
       if(a<.012||a>.992)continue;
-      let found=false;
-      for(const radius of radii){
-        samplesR.length=samplesG.length=samplesB.length=0;
-        for(let k=0;k<8;k++){
-          const [dx,dy]=offsets[k],ni=((y+dy*radius)*width+(x+dx*radius))*4;
-          if(alpha[ni+3]>5)continue;
-          samplesR.push(src[ni]);samplesG.push(src[ni+1]);samplesB.push(src[ni+2]);
+      samplesR.length=samplesG.length=samplesB.length=0;
+      for(const [dx,dy] of directions){
+        for(let radius=1;radius<=maxRadius;radius++){
+          const sx=x+dx*radius,sy=y+dy*radius;
+          if(sx<0||sx>=width||sy<0||sy>=height)break;
+          const si=(sy*width+sx)*4;
+          if(alpha[si+3]<=8){
+            samplesR.push(src[si]);samplesG.push(src[si+1]);samplesB.push(src[si+2]);
+            break;
+          }
         }
-        if(samplesR.length>=2){found=true;break}
       }
-      if(!found)continue;
+      // Require several independent directions to avoid sampling through a gap
+      // into foreground/background details and introducing a new color cast.
+      if(samplesR.length<3)continue;
       const br=median(samplesR),bg=median(samplesG),bb=median(samplesB);
-      // Unmix the original foreground/background blend. A lower denominator
-      // removes more residual spill on faint strands; the correction floor
-      // below limits noise amplification when alpha is extremely small.
-      const denom=Math.max(.035,a);
+      const denom=Math.max(.045,a);
       const fr=Math.max(0,Math.min(255,(src[i]-(1-a)*br)/denom));
       const fg=Math.max(0,Math.min(255,(src[i+1]-(1-a)*bg)/denom));
       const fb=Math.max(0,Math.min(255,(src[i+2]-(1-a)*bb)/denom));
-      const confidence=Math.min(1,samplesR.length/5);
-      const lowAlphaProtection=Math.min(1,Math.max(.58,a/.08));
-      const correction=Math.min(1,strength*confidence*lowAlphaProtection);
+      const confidence=Math.min(1,samplesR.length/6);
+      // Keep correction deliberately softer for nearly transparent strands, where
+      // inverse compositing amplifies sensor noise and JPEG artifacts.
+      const alphaSafety=Math.min(1,Math.max(.42,a/.10));
+      const correction=Math.min(.92,strength*confidence*alphaSafety);
       src[i]=Math.round(src[i]+(fr-src[i])*correction);
       src[i+1]=Math.round(src[i+1]+(fg-src[i+1])*correction);
       src[i+2]=Math.round(src[i+2]+(fb-src[i+2])*correction);
