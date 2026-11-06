@@ -1,9 +1,9 @@
 import { pipeline, env, AutoModel, AutoProcessor, RawImage } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2";
 const $ = id => document.getElementById(id);
-const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,edgeCleanup:42,decontaminate:100,cleanedSource:null,remover:null,mattingModel:null,mattingProcessor:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
+const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,edgeCleanup:42,decontaminate:100,cleanedSource:null,remover:null,ben2Remover:null,currentModel:"ormbg",mattingModel:null,mattingProcessor:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
 const preview=$("previewCanvas"),brush=$("brushCanvas"),previewCtx=preview.getContext("2d",{willReadFrequently:true}),brushCtx=brush.getContext("2d"),toastEl=$("toast");
 function toast(message){toastEl.textContent=message;toastEl.classList.add("show");clearTimeout(toast._timer);toast._timer=setTimeout(()=>toastEl.classList.remove("show"),3200)}
-function setBusy(busy,label){state.busy=busy;$("removeButton").disabled=busy||!state.source;$("removeButton").textContent=busy?(label||"Memproses…"):"✦ Hapus background otomatis"}
+function setBusy(busy,label){state.busy=busy;$("removeButton").disabled=busy||!state.source;$("ben2Button").disabled=busy||!state.source;$("removeButton").textContent=busy?(label||"Memproses…"):"✦ Hapus background otomatis"}
 function setProgress(value,label){$("progressWrap").hidden=false;$("progressBar").style.width=Math.max(0,Math.min(100,value))+"%";$("progressText").textContent=label}
 function finishProgress(){$("progressWrap").hidden=true;$("progressBar").style.width="0%"}
 function imageFromFile(file){return new Promise((resolve,reject)=>{const url=URL.createObjectURL(file),img=new Image();img.onload=()=>resolve({img,url});img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("File foto tidak dapat dibuka."))};img.src=url})}
@@ -20,14 +20,14 @@ async function applyEdgeCleanup(){
   const width=state.width,height=state.height,rowStride=width*4;
   const originalAlpha=new Uint8ClampedArray(width*height);
   for(let p=0,j=3;p<originalAlpha.length;p++,j+=4)originalAlpha[p]=pixels[j];
-  const cutoff=0.012+strength*0.075,exponent=1+strength*.42;
+  // BEN2 already returns a soft alpha matte; use gentler cleanup to protect fine strands.\n  const effectiveStrength=state.currentModel==="ben2"?strength*.25:strength;\n  const cutoff=0.012+effectiveStrength*0.075,exponent=1+effectiveStrength*.42;
   for(let y=0;y<height;y++){
     if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
     const rowStart=y*rowStride;
     for(let x=0,i=rowStart;x<width;x++,i+=4){
       const alpha=originalAlpha[y*width+x]/255;
       if(alpha<=0.008){pixels[i+3]=0;continue}
-      if(strength===0)continue;
+      if(effectiveStrength===0)continue;
       let normalized=Math.pow(Math.max(0,Math.min(1,(alpha-cutoff)/(1-cutoff))),exponent);
       // Spend neighborhood work only on translucent edge pixels.
       if(alpha<.22){
@@ -211,8 +211,85 @@ async function loadModel(){
     state.modelLoading=false;
   }
 }
-async function removeBackground({autoRefine=false}={}){if(!state.source||state.busy)return;setBusy(true,"Menyiapkan AI…");try{const remover=await loadModel();setProgress(55,"AI sedang mengenali objek…");const maxSide=1024,scale=Math.min(1,maxSide/Math.max(state.width,state.height)),inferenceWidth=Math.max(1,Math.round(state.width*scale)),inferenceHeight=Math.max(1,Math.round(state.height*scale)),inferenceCanvas=createCanvas(inferenceWidth,inferenceHeight);inferenceCanvas.getContext("2d").drawImage(state.source,0,0,inferenceWidth,inferenceHeight);const inferenceBlob=await new Promise((resolve,reject)=>inferenceCanvas.toBlob(blob=>blob?resolve(blob):reject(new Error("Gagal menyiapkan gambar untuk AI.")),"image/png"));const result=await remover(inferenceBlob),cutout=Array.isArray(result)?result[0]:result;if(!cutout)throw new Error("AI tidak menghasilkan mask. Coba foto lain.");let cutoutCanvas;if(typeof cutout.toCanvas==="function")cutoutCanvas=cutout.toCanvas();else if(cutout instanceof HTMLCanvasElement)cutoutCanvas=cutout;else throw new Error("Format hasil AI tidak dikenali.");const cutoutCtx=cutoutCanvas.getContext("2d",{willReadFrequently:true}),pixels=cutoutCtx.getImageData(0,0,cutoutCanvas.width,cutoutCanvas.height),data=pixels.data;let hasAlpha=false;for(let i=3;i<data.length;i+=4){if(data[i]<250){hasAlpha=true;break}}if(!hasAlpha){for(let i=0;i<data.length;i+=4)data[i+3]=Math.round(data[i]*.299+data[i+1]*.587+data[i+2]*.114);cutoutCtx.putImageData(pixels,0,0)}setProgress(88,"Menyusun hasil pada resolusi asli…");const mask=createCanvas(state.width,state.height);mask.getContext("2d").drawImage(cutoutCanvas,0,0,state.width,state.height);state.mask=mask;state.baseMask=createCanvas(state.width,state.height);state.baseMask.getContext("2d").drawImage(mask,0,0);$("hairMattingButton").disabled=false;await applyEdgeCleanup();await decontaminateEdgeColors();brush.style.pointerEvents="auto";render();$("previewStatus").textContent="Background terhapus";$("resetMask").disabled=false;finishProgress();toast("Background berhasil diproses. Periksa tepi objek sebelum ekspor.")}catch(error){console.error(error);finishProgress();toast(error.message||"Gagal memproses foto. Periksa koneksi dan coba lagi.")}finally{setBusy(false);enableExports();if(autoRefine&&state.mask)await refineHairMatting({automatic:true})}}
-function setBackground(value){state.background=value;document.querySelectorAll(".swatch").forEach(b=>b.classList.toggle("selected",b.dataset.bg===value));render()}
+async function loadBen2Model(){
+  if(state.ben2Remover)return state.ben2Remover;
+  if(state.modelLoading)throw new Error("Model AI sedang disiapkan. Tunggu sebentar.");
+  state.modelLoading=true;
+  try{
+    setProgress(10,"Menyiapkan model BEN2…");
+    env.allowLocalModels=false;
+    env.useBrowserCache=true;
+    let remover=null;
+    if(navigator.gpu&&typeof navigator.gpu.requestAdapter==="function"){
+      try{
+        const adapter=await navigator.gpu.requestAdapter();
+        if(adapter&&adapter.features&&adapter.features.has("shader-f16")){
+          setProgress(24,"Memuat BEN2 untuk GPU…");
+          remover=await pipeline("background-removal","onnx-community/BEN2-ONNX",{device:"webgpu",dtype:"fp16"});
+        }
+      }catch(error){console.warn("BEN2 WebGPU gagal; mencoba WASM.",error)}
+    }
+    if(!remover){
+      setProgress(28,"Memuat BEN2 mode kompatibel (WASM)…");
+      remover=await pipeline("background-removal","onnx-community/BEN2-ONNX",{device:"wasm",dtype:"q8"});
+    }
+    state.ben2Remover=remover;
+    return remover;
+  }finally{state.modelLoading=false}
+}
+async function removeBackground({autoRefine=false,model="ormbg"}={}){
+  if(!state.source||state.busy)return;
+  setBusy(true,model==="ben2"?"Menyiapkan BEN2…":"Menyiapkan AI…");
+  try{
+    const remover=model==="ben2"?await loadBen2Model():await loadModel();
+    setProgress(55,model==="ben2"?"BEN2 menganalisis rambut dan tepian…":"AI sedang mengenali objek…");
+    const maxSide=1024,scale=Math.min(1,maxSide/Math.max(state.width,state.height));
+    const inferenceWidth=Math.max(1,Math.round(state.width*scale)),inferenceHeight=Math.max(1,Math.round(state.height*scale));
+    const inferenceCanvas=createCanvas(inferenceWidth,inferenceHeight);
+    inferenceCanvas.getContext("2d").drawImage(state.source,0,0,inferenceWidth,inferenceHeight);
+    const inferenceBlob=await new Promise((resolve,reject)=>inferenceCanvas.toBlob(blob=>blob?resolve(blob):reject(new Error("Gagal menyiapkan gambar untuk AI.")),"image/png"));
+    const result=model==="ben2"?await remover([inferenceBlob]):await remover(inferenceBlob);
+    const cutout=Array.isArray(result)?result[0]:result;
+    if(!cutout)throw new Error("AI tidak menghasilkan mask. Coba foto lain.");
+    let cutoutCanvas;
+    if(typeof cutout.toCanvas==="function")cutoutCanvas=cutout.toCanvas();
+    else if(cutout instanceof HTMLCanvasElement)cutoutCanvas=cutout;
+    else throw new Error("Format hasil AI tidak dikenali.");
+    const cutoutCtx=cutoutCanvas.getContext("2d",{willReadFrequently:true});
+    const pixels=cutoutCtx.getImageData(0,0,cutoutCanvas.width,cutoutCanvas.height),data=pixels.data;
+    let hasAlpha=false;
+    for(let i=3;i<data.length;i+=4){if(data[i]<250){hasAlpha=true;break}}
+    if(!hasAlpha){
+      for(let i=0;i<data.length;i+=4)data[i+3]=Math.round(data[i]*.299+data[i+1]*.587+data[i+2]*.114);
+      cutoutCtx.putImageData(pixels,0,0);
+    }
+    setProgress(88,"Menyusun matte pada resolusi asli…");
+    const mask=createCanvas(state.width,state.height);
+    mask.getContext("2d").drawImage(cutoutCanvas,0,0,state.width,state.height);
+    state.currentModel=model;
+    state.cleanedSource=null;
+    state.mask=mask;
+    state.baseMask=createCanvas(state.width,state.height);
+    state.baseMask.getContext("2d").drawImage(mask,0,0);
+    $("hairMattingButton").disabled=false;
+    await applyEdgeCleanup();
+    await decontaminateEdgeColors();
+    brush.style.pointerEvents="auto";
+    render();
+    $("previewStatus").textContent=model==="ben2"?"BEN2 · matte rambut detail":"ORMBG · background terhapus";
+    $("resetMask").disabled=false;
+    finishProgress();
+    toast(model==="ben2"?"BEN2 selesai. Periksa rambut dan tepian; model alternatif ini masih tahap uji.":"Background berhasil diproses. Periksa tepi objek sebelum ekspor.");
+  }catch(error){
+    console.error(error);
+    finishProgress();
+    toast((model==="ben2"?"BEN2 gagal: ":"")+(error.message||"Gagal memproses foto. Periksa koneksi dan coba lagi."));
+  }finally{
+    setBusy(false);
+    enableExports();
+    if(autoRefine&&state.mask)await refineHairMatting({automatic:true});
+  }
+}function setBackground(value){state.background=value;document.querySelectorAll(".swatch").forEach(b=>b.classList.toggle("selected",b.dataset.bg===value));render()}
 let pickerHue=210,pickerSaturation=100,pickerValue=100;
 function hsvToHex(h,s,v){s/=100;v/=100;const c=v*s,x=c*(1-Math.abs((h/60)%2-1)),m=v-c;let r=0,g=0,b=0;if(h<60){r=c;g=x}else if(h<120){r=x;g=c}else if(h<180){g=c;b=x}else if(h<240){g=x;b=c}else if(h<300){r=x;b=c}else{r=c;b=x}return "#"+[r,g,b].map(n=>Math.round((n+m)*255).toString(16).padStart(2,"0")).join("")}
 function applyLivePicker(){const color=hsvToHex(pickerHue,pickerSaturation,pickerValue);$("saturationPicker").style.backgroundColor="hsl("+pickerHue+",100%,50%)";$("colorPickerHandle").style.left=pickerSaturation+"%";$("colorPickerHandle").style.top=(100-pickerValue)+"%";$("customColorPreview").style.background=color;setBackground(color)}
@@ -236,7 +313,7 @@ $("photoInput").addEventListener("change",e=>loadMainPhoto(e.target.files[0]));
 $("dropzone").addEventListener("dragover",e=>{e.preventDefault();$("dropzone").classList.add("dragover")});
 $("dropzone").addEventListener("dragleave",()=>$("dropzone").classList.remove("dragover"));
 $("dropzone").addEventListener("drop",e=>{e.preventDefault();$("dropzone").classList.remove("dragover");loadMainPhoto(e.dataTransfer.files[0])});
-$("removeButton").addEventListener("click",removeBackground);
+$("removeButton").addEventListener("click",()=>removeBackground({model:"ormbg"}));\n$("ben2Button").addEventListener("click",()=>removeBackground({model:"ben2"}));
 document.querySelectorAll(".swatch").forEach(b=>{b.addEventListener("pointerenter",()=>setBackground(b.dataset.bg));b.addEventListener("click",()=>setBackground(b.dataset.bg))});
 bindLivePicker($("saturationPicker"),"saturation");bindLivePicker($("huePicker"),"hue");applyLivePicker();
 $("backgroundInput").addEventListener("change",async e=>{const file=e.target.files[0];if(!file)return;try{const loaded=await imageFromFile(file);state.backgroundImage=loaded.img;$("backgroundImageMeta").textContent="Background: "+file.name;setBackground(loaded.img);toast("Background gambar berhasil diterapkan.")}catch(err){toast(err.message)}});
