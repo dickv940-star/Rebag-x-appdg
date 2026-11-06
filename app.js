@@ -220,23 +220,20 @@ async function loadBen2Model(){
   if(state.modelLoading)throw new Error("Model AI sedang disiapkan. Tunggu sebentar.");
   state.modelLoading=true;
   try{
-    setProgress(10,"Menyiapkan model BEN2…");
+    setProgress(10,"Memeriksa dukungan BEN2…");
     env.allowLocalModels=false;
     env.useBrowserCache=true;
-    let remover=null;
-    if(navigator.gpu&&typeof navigator.gpu.requestAdapter==="function"){
-      try{
-        const adapter=await navigator.gpu.requestAdapter();
-        if(adapter&&adapter.features&&adapter.features.has("shader-f16")){
-          setProgress(24,"Memuat BEN2 untuk GPU…");
-          remover=await pipeline("background-removal","onnx-community/BEN2-ONNX",{device:"webgpu",dtype:"fp16"});
-        }
-      }catch(error){console.warn("BEN2 WebGPU gagal; mencoba WASM.",error)}
+    if(!navigator.gpu||typeof navigator.gpu.requestAdapter!=="function"){
+      throw new Error("BEN2 memerlukan WebGPU dengan dukungan shader-f16. Perangkat ini dapat memakai perapian rambut MODNet melalui tombol Detail Rambut.");
     }
-    if(!remover){
-      setProgress(28,"Memuat BEN2 mode kompatibel (WASM FP32)…");
-      remover=await pipeline("background-removal","onnx-community/BEN2-ONNX",{device:"wasm",dtype:"fp32"});
+    const adapter=await navigator.gpu.requestAdapter();
+    if(!adapter||!adapter.features||!adapter.features.has("shader-f16")){
+      throw new Error("GPU tidak mendukung shader-f16 untuk BEN2. Gunakan Detail Rambut (MODNet), yang berjalan melalui WASM.");
     }
+    setProgress(28,"Memuat model BEN2 FP16 untuk GPU…");
+    // The published BEN2-ONNX repository contains model_fp16.onnx only.
+    // Do not attempt a WASM/FP32 fallback: that variant is not published.
+    const remover=await pipeline("background-removal","onnx-community/BEN2-ONNX",{device:"webgpu",dtype:"fp16"});
     state.ben2Remover=remover;
     return remover;
   }finally{state.modelLoading=false}
@@ -313,7 +310,7 @@ function paintStroke(point){if(!state.mask||!state.baseMask)return;const ctx=sta
 function onBrushDown(e){if(!state.mask)return;state.pointerDown=true;brush.setPointerCapture(e.pointerId);state.lastPoint=null;const p=getCanvasPoint(e);paintStroke(p);state.lastPoint=p;render()}
 function onBrushMove(e){if(!state.pointerDown)return;const p=getCanvasPoint(e);paintStroke(p);state.lastPoint=p;render()}
 async function onBrushUp(){state.pointerDown=false;state.lastPoint=null;if(state.mask){await decontaminateEdgeColors();render()}}
-async function loadMainPhoto(file){if(!file||!/^image\/(jpeg|png|webp)$/.test(file.type)){toast("Pilih foto JPG, PNG, atau WebP.");return}try{const loaded=await imageFromFile(file);if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.source=loaded.img;state.sourceUrl=loaded.url;state.width=loaded.img.naturalWidth;state.height=loaded.img.naturalHeight;state.fileName=(file.name||"rebag-photo").replace(/\.[^.]+$/,"").replace(/[^\w-]+/g,"-");state.mask=null;state.baseMask=null;state.cleanedSource=null;$("hairMattingButton").disabled=true;$("fileMeta").textContent=file.name+" • "+state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent="Foto siap diedit";showEditor();toast("Foto diunggah. AI menghapus background; perapian rambut lanjutan tersedia lewat tombol manual.");await removeBackground()}catch(e){toast(e.message)}}
+async function loadMainPhoto(file){if(!file||!/^image\/(jpeg|png|webp)$/.test(file.type)){toast("Pilih foto JPG, PNG, atau WebP.");return}try{const loaded=await imageFromFile(file);if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.source=loaded.img;state.sourceUrl=loaded.url;state.width=loaded.img.naturalWidth;state.height=loaded.img.naturalHeight;state.fileName=(file.name||"rebag-photo").replace(/\.[^.]+$/,"").replace(/[^\w-]+/g,"-");state.mask=null;state.baseMask=null;state.cleanedSource=null;$("hairMattingButton").disabled=true;$("fileMeta").textContent=file.name+" • "+state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent="Foto siap diedit";showEditor();toast("Foto diunggah. AI menghapus background; detail rambut otomatis diproses untuk foto hingga 6 MP.");await removeBackground({autoRefine:state.width*state.height<=6000000})}catch(e){toast(e.message)}}
 $("photoInput").addEventListener("change",e=>loadMainPhoto(e.target.files[0]));
 $("dropzone").addEventListener("dragover",e=>{e.preventDefault();$("dropzone").classList.add("dragover")});
 $("dropzone").addEventListener("dragleave",()=>$("dropzone").classList.remove("dragover"));
