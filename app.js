@@ -39,49 +39,41 @@ async function decontaminateEdgeColors(){
   const sourceCanvas=createCanvas(width,height),ctx=sourceCanvas.getContext("2d",{willReadFrequently:true});
   ctx.drawImage(state.source,0,0,width,height);
   const image=ctx.getImageData(0,0,width,height);
-  const mask=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height);
-  const src=image.data,alpha=mask.data,strength=state.decontaminate/100;
+  const alpha=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height).data;
+  const src=image.data,strength=state.decontaminate/100;
   if(strength<=0){state.cleanedSource=sourceCanvas;return}
-  // Sample the original background farther outside the silhouette. A wider
-  // multi-direction search is important for fine hair and colored edge spill.
-  const rings=[4,9],directions=8;
-  for(let y=14;y<height-14;y++){
-    if((y&7)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
-    let i=(y*width+14)*4;
-    for(let x=14;x<width-14;x++,i+=4){
+  // Work only on semi-transparent boundary pixels; opaque subject pixels are
+  // skipped immediately. A compact 8-direction sample avoids the old costly
+  // two-ring/16-sample pass over every pixel.
+  const offsets=[[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
+  for(let y=1;y<height-1;y++){
+    if((y&31)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
+    let i=(y*width+1)*4;
+    for(let x=1;x<width-1;x++,i+=4){
       const a=alpha[i+3]/255;
       if(a<0.035||a>0.985)continue;
-      let bgR=0,bgG=0,bgB=0,total=0,samples=0;
-      for(const radius of rings){
-        bgR=bgG=bgB=total=samples=0;
-        for(let step=0;step<directions;step++){
-          const angle=(Math.PI*2*step)/directions;
-          const dx=Math.round(Math.cos(angle)*radius),dy=Math.round(Math.sin(angle)*radius);
-          const ni=i+(dy*width+dx)*4,na=alpha[ni+3]/255;
-          if(na>0.06)continue;
+      let r=0,g=0,b=0,total=0,samples=0;
+      for(let radius of [3,6]){
+        r=g=b=total=samples=0;
+        for(let k=0;k<8;k++){
+          const [dx,dy]=offsets[k],ni=i+(dy*width+dx)*radius*4;
+          if(alpha[ni+3]/255>0.06)continue;
           const weight=1/(radius*radius);
-          bgR+=src[ni]*weight;bgG+=src[ni+1]*weight;bgB+=src[ni+2]*weight;
+          r+=src[ni]*weight;g+=src[ni+1]*weight;b+=src[ni+2]*weight;
           total+=weight;samples++;
         }
         if(samples>=3)break;
       }
       if(samples<3||total===0)continue;
-      const inv=1/total,bg=[bgR*inv,bgG*inv,bgB*inv];
-      // Un-composite the old background from the edge pixel. Use the actual
-      // matte alpha (with a small stability floor), not a large denominator
-      // that leaves the old background color visible in semi-transparent hair.
-      const denom=Math.max(0.085,a);
-      const foreground=[
-        Math.max(0,Math.min(255,(src[i]-(1-a)*bg[0])/denom)),
-        Math.max(0,Math.min(255,(src[i+1]-(1-a)*bg[1])/denom)),
-        Math.max(0,Math.min(255,(src[i+2]-(1-a)*bg[2])/denom))
-      ];
-      const sampleConfidence=Math.min(1,samples/7);
-      const edgeConfidence=Math.min(1,Math.max(.35,(1-a)/.22));
-      const correction=Math.min(1,strength*sampleConfidence*edgeConfidence);
-      src[i]=Math.round(src[i]+(foreground[0]-src[i])*correction);
-      src[i+1]=Math.round(src[i+1]+(foreground[1]-src[i+1])*correction);
-      src[i+2]=Math.round(src[i+2]+(foreground[2]-src[i+2])*correction);
+      const inv=1/total,denom=Math.max(0.085,a);
+      const confidence=Math.min(1,samples/6)*Math.min(1,Math.max(.35,(1-a)/.22));
+      const correction=Math.min(1,strength*confidence);
+      const fr=Math.max(0,Math.min(255,(src[i]-(1-a)*(r*inv))/denom));
+      const fg=Math.max(0,Math.min(255,(src[i+1]-(1-a)*(g*inv))/denom));
+      const fb=Math.max(0,Math.min(255,(src[i+2]-(1-a)*(b*inv))/denom));
+      src[i]=Math.round(src[i]+(fr-src[i])*correction);
+      src[i+1]=Math.round(src[i+1]+(fg-src[i+1])*correction);
+      src[i+2]=Math.round(src[i+2]+(fb-src[i+2])*correction);
     }
   }
   ctx.putImageData(image,0,0);
@@ -217,7 +209,7 @@ function paintStroke(point){if(!state.mask||!state.baseMask)return;const ctx=sta
 function onBrushDown(e){if(!state.mask)return;state.pointerDown=true;brush.setPointerCapture(e.pointerId);state.lastPoint=null;const p=getCanvasPoint(e);paintStroke(p);state.lastPoint=p;render()}
 function onBrushMove(e){if(!state.pointerDown)return;const p=getCanvasPoint(e);paintStroke(p);state.lastPoint=p;render()}
 async function onBrushUp(){state.pointerDown=false;state.lastPoint=null;if(state.mask){await decontaminateEdgeColors();render()}}
-async function loadMainPhoto(file){if(!file||!/^image\/(jpeg|png|webp)$/.test(file.type)){toast("Pilih foto JPG, PNG, atau WebP.");return}try{const loaded=await imageFromFile(file);if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.source=loaded.img;state.sourceUrl=loaded.url;state.width=loaded.img.naturalWidth;state.height=loaded.img.naturalHeight;state.fileName=(file.name||"rebag-photo").replace(/\.[^.]+$/,"").replace(/[^\w-]+/g,"-");state.mask=null;state.baseMask=null;state.cleanedSource=null;$("hairMattingButton").disabled=true;$("fileMeta").textContent=file.name+" • "+state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent="Foto siap diedit";showEditor();toast("Foto diunggah. AI menghapus background lalu menjalankan matting rambut otomatis…");await removeBackground({autoRefine:true})}catch(e){toast(e.message)}}
+async function loadMainPhoto(file){if(!file||!/^image\/(jpeg|png|webp)$/.test(file.type)){toast("Pilih foto JPG, PNG, atau WebP.");return}try{const loaded=await imageFromFile(file);if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.source=loaded.img;state.sourceUrl=loaded.url;state.width=loaded.img.naturalWidth;state.height=loaded.img.naturalHeight;state.fileName=(file.name||"rebag-photo").replace(/\.[^.]+$/,"").replace(/[^\w-]+/g,"-");state.mask=null;state.baseMask=null;state.cleanedSource=null;$("hairMattingButton").disabled=true;$("fileMeta").textContent=file.name+" • "+state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent="Foto siap diedit";showEditor();toast("Foto diunggah. AI menghapus background lalu menjalankan matting rambut otomatis…");await removeBackground()}catch(e){toast(e.message)}}
 $("photoInput").addEventListener("change",e=>loadMainPhoto(e.target.files[0]));
 $("dropzone").addEventListener("dragover",e=>{e.preventDefault();$("dropzone").classList.add("dragover")});
 $("dropzone").addEventListener("dragleave",()=>$("dropzone").classList.remove("dragover"));
