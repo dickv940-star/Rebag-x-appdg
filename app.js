@@ -1,6 +1,6 @@
 import { pipeline, env, AutoModel, AutoProcessor, RawImage } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2";
 const $ = id => document.getElementById(id);
-const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,edgeCleanup:18,decontaminate:100,cleanedSource:null,remover:null,mattingModel:null,mattingProcessor:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
+const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,edgeCleanup:42,decontaminate:100,cleanedSource:null,remover:null,mattingModel:null,mattingProcessor:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
 const preview=$("previewCanvas"),brush=$("brushCanvas"),previewCtx=preview.getContext("2d",{willReadFrequently:true}),brushCtx=brush.getContext("2d"),toastEl=$("toast");
 function toast(message){toastEl.textContent=message;toastEl.classList.add("show");clearTimeout(toast._timer);toast._timer=setTimeout(()=>toastEl.classList.remove("show"),3200)}
 function setBusy(busy,label){state.busy=busy;$("removeButton").disabled=busy||!state.source;$("removeButton").textContent=busy?(label||"Memproses…"):"✦ Hapus background otomatis"}
@@ -17,18 +17,33 @@ async function applyEdgeCleanup(){
   if(!state.baseMask||!state.mask)return;
   const source=state.baseMask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height);
   const target=state.mask.getContext("2d"),pixels=source.data,strength=state.edgeCleanup/100;
-  // Preserve low-opacity hair strands while reducing faint background haze.
-  const cutoff=strength*.025,exponent=1+strength*.16;
-  const rowStride=state.width*4;
-  for(let y=0;y<state.height;y++){
+  const width=state.width,height=state.height,rowStride=width*4;
+  const originalAlpha=new Uint8ClampedArray(width*height);
+  for(let p=0,j=3;p<originalAlpha.length;p++,j+=4)originalAlpha[p]=pixels[j];
+  const cutoff=0.012+strength*0.075,exponent=1+strength*.42;
+  for(let y=0;y<height;y++){
     if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
-    const rowStart=y*rowStride,rowEnd=rowStart+rowStride;
-    for(let i=rowStart+3;i<rowEnd;i+=4){
-    const alpha=pixels[i]/255;
-    if(alpha<=0){pixels[i]=0;continue}
-    if(strength===0)continue;
-    const normalized=Math.max(0,Math.min(1,(alpha-cutoff)/(1-cutoff)));
-    pixels[i]=Math.round(Math.pow(normalized,exponent)*255);
+    const rowStart=y*rowStride;
+    for(let x=0,i=rowStart;x<width;x++,i+=4){
+      const alpha=originalAlpha[y*width+x]/255;
+      if(alpha<=0.008){pixels[i+3]=0;continue}
+      if(strength===0)continue;
+      let normalized=Math.pow(Math.max(0,Math.min(1,(alpha-cutoff)/(1-cutoff))),exponent);
+      // Spend neighborhood work only on translucent edge pixels.
+      if(alpha<.22){
+        let nearby=0;
+        for(let dy=-2;dy<=2;dy++){
+          const yy=y+dy;if(yy<0||yy>=height)continue;
+          for(let dx=-2;dx<=2;dx++){
+            const xx=x+dx;if(xx<0||xx>=width)continue;
+            const value=originalAlpha[yy*width+xx]/255;
+            if(value>nearby)nearby=value;
+          }
+        }
+        if(alpha<.16&&nearby<.48)normalized*=Math.max(.12,nearby/.48);
+        if(alpha<.045&&nearby<.2)normalized=0;
+      }
+      pixels[i+3]=Math.round(normalized*255);
     }
   }
   target.putImageData(source,0,0);
@@ -42,36 +57,33 @@ async function decontaminateEdgeColors(){
   const alpha=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height).data;
   const src=image.data,strength=state.decontaminate/100;
   if(strength<=0){state.cleanedSource=sourceCanvas;return}
-  // Sample only pixels with a complete 6px neighborhood. This prevents
-  // row-wrap reads at image borders and avoids expensive work on opaque areas.
   const offsets=[[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
-  const minRadius=3,maxRadius=6;
-  if(width<=maxRadius*2||height<=maxRadius*2){state.cleanedSource=sourceCanvas;return}
-  for(let y=maxRadius;y<height-maxRadius;y++){
-    if((y&31)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
-    let i=(y*width+maxRadius)*4;
-    for(let x=maxRadius;x<width-maxRadius;x++,i+=4){
+  const radii=[4,8,14,22],samplesR=[],samplesG=[],samplesB=[];
+  if(width<=44||height<=44){state.cleanedSource=sourceCanvas;return}
+  for(let y=22;y<height-22;y++){
+    if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
+    let i=(y*width+22)*4;
+    for(let x=22;x<width-22;x++,i+=4){
       const a=alpha[i+3]/255;
-      if(a<0.035||a>0.985)continue;
-      let r=0,g=0,b=0,total=0,samples=0;
-      for(const radius of [minRadius,maxRadius]){
-        r=g=b=total=samples=0;
+      if(a<.035||a>.985)continue;
+      let found=false;
+      for(const radius of radii){
+        samplesR.length=samplesG.length=samplesB.length=0;
         for(let k=0;k<8;k++){
-          const [dx,dy]=offsets[k],nx=x+dx*radius,ny=y+dy*radius,ni=(ny*width+nx)*4;
-          if(alpha[ni+3]/255>0.06)continue;
-          const weight=1/(radius*radius);
-          r+=src[ni]*weight;g+=src[ni+1]*weight;b+=src[ni+2]*weight;
-          total+=weight;samples++;
+          const [dx,dy]=offsets[k],ni=((y+dy*radius)*width+(x+dx*radius))*4;
+          if(alpha[ni+3]>5)continue;
+          samplesR.push(src[ni]);samplesG.push(src[ni+1]);samplesB.push(src[ni+2]);
         }
-        if(samples>=3)break;
+        if(samplesR.length>=3){found=true;break}
       }
-      if(samples<3||total===0)continue;
-      const inv=1/total,denom=Math.max(0.085,a);
-      const confidence=Math.min(1,samples/6)*Math.min(1,Math.max(.35,(1-a)/.22));
-      const correction=Math.min(1,strength*confidence);
-      const fr=Math.max(0,Math.min(255,(src[i]-(1-a)*(r*inv))/denom));
-      const fg=Math.max(0,Math.min(255,(src[i+1]-(1-a)*(g*inv))/denom));
-      const fb=Math.max(0,Math.min(255,(src[i+2]-(1-a)*(b*inv))/denom));
+      if(!found)continue;
+      const median=arr=>{arr.sort((a,b)=>a-b);return arr[arr.length>>1]};
+      const br=median(samplesR),bg=median(samplesG),bb=median(samplesB);
+      const denom=Math.max(.12,a),confidence=Math.min(1,samplesR.length/6);
+      const stability=Math.min(1,a/.22),correction=Math.min(1,strength*confidence*stability);
+      const fr=Math.max(0,Math.min(255,(src[i]-(1-a)*br)/denom));
+      const fg=Math.max(0,Math.min(255,(src[i+1]-(1-a)*bg)/denom));
+      const fb=Math.max(0,Math.min(255,(src[i+2]-(1-a)*bb)/denom));
       src[i]=Math.round(src[i]+(fr-src[i])*correction);
       src[i+1]=Math.round(src[i+1]+(fg-src[i+1])*correction);
       src[i+2]=Math.round(src[i+2]+(fb-src[i+2])*correction);
