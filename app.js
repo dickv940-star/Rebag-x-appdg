@@ -234,7 +234,7 @@ async function loadBen2Model(){
       }catch(error){console.warn("BEN2 WebGPU gagal; mencoba WASM.",error)}
     }
     if(!remover){
-      setProgress(28,"Memuat BEN2 mode kompatibel (WASM FP16)…");
+      setProgress(28,"Memuat BEN2 mode kompatibel (WASM FP32)…");
       remover=await pipeline("background-removal","onnx-community/BEN2-ONNX",{device:"wasm",dtype:"fp32"});
     }
     state.ben2Remover=remover;
