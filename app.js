@@ -50,6 +50,38 @@ async function applyEdgeCleanup(){
   }
   target.putImageData(source,0,0);
 }
+async function sharpenHairEdgeMatte(){
+  if(!state.mask)return;
+  const canvas=state.mask,ctx=canvas.getContext("2d",{willReadFrequently:true});
+  const image=ctx.getImageData(0,0,state.width,state.height),data=image.data;
+  const width=state.width,height=state.height,stride=width*4;
+  const alpha=new Uint8ClampedArray(width*height);
+  for(let p=0,j=3;p<alpha.length;p++,j+=4)alpha[p]=data[j];
+  // Gentle alpha unsharp-mask: crispens the silhouette and fine strands
+  // without sharpening RGB noise or adding a bright outline.
+  for(let y=0;y<height;y++){
+    if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
+    for(let x=0;x<width;x++){
+      const p=y*width+x,i=y*stride+x*4,a=alpha[p]/255;
+      if(a<=.015||a>=.985)continue;
+      let sum=0,weight=0;
+      for(let dy=-1;dy<=1;dy++){
+        const yy=y+dy;if(yy<0||yy>=height)continue;
+        for(let dx=-1;dx<=1;dx++){
+          const xx=x+dx;if(xx<0||xx>=width)continue;
+          const w=(dx===0?2:1)*(dy===0?2:1);
+          sum+=(alpha[yy*width+xx]/255)*w;weight+=w;
+        }
+      }
+      const local=sum/weight;
+      // Stronger only on actual transitions; soft hair transparency is retained.
+      const edge=Math.min(1,Math.abs(a-local)*3.2+.12);
+      const sharpened=Math.max(0,Math.min(1,a+(a-local)*.72*edge));
+      data[i+3]=Math.round(sharpened*255);
+    }
+  }
+  ctx.putImageData(image,0,0);
+}
 async function decontaminateEdgeColors(){
   if(!state.source||!state.mask)return;
   const width=state.width,height=state.height;
@@ -88,13 +120,13 @@ async function decontaminateEdgeColors(){
       const br=median(samplesR),bg=median(samplesG),bb=median(samplesB);
       // Inverse alpha compositing estimates the uncontaminated foreground RGB.
       // A denominator floor limits noise amplification on very soft hair pixels.
-      const denom=Math.max(.08,a);
+      const denom=Math.max(.06,a);
       const fr=Math.max(0,Math.min(255,(src[i]-(1-a)*br)/denom));
       const fg=Math.max(0,Math.min(255,(src[i+1]-(1-a)*bg)/denom));
       const fb=Math.max(0,Math.min(255,(src[i+2]-(1-a)*bb)/denom));
       const confidence=Math.min(1,samplesR.length/5);
-      const alphaSafety=Math.min(1,Math.max(.68,a/.08));
-      const correction=Math.min(.98,strength*confidence*alphaSafety);
+      const alphaSafety=Math.min(1,Math.max(.90,a/.06));
+      const correction=Math.min(.995,strength*confidence*alphaSafety);
       src[i]=Math.round(src[i]+(fr-src[i])*correction);
       src[i+1]=Math.round(src[i+1]+(fg-src[i+1])*correction);
       src[i+2]=Math.round(src[i+2]+(fb-src[i+2])*correction);
@@ -160,7 +192,7 @@ async function refineHairMatting({automatic=false}={}){
     ctx.putImageData(pixels,0,0);
     state.baseMask=refined;state.mask=createCanvas(state.width,state.height);
     state.mask.getContext("2d").drawImage(refined,0,0);
-    await applyEdgeCleanup();await decontaminateEdgeColors();render();
+    await applyEdgeCleanup();await sharpenHairEdgeMatte();await sharpenHairEdgeMatte();await sharpenHairEdgeMatte();await decontaminateEdgeColors();render();
     $("previewStatus").textContent="Matte rambut dan tepi diperhalus";
     toast(automatic?"Penghapusan background dan perapian matte otomatis selesai.":"Perapian matte selesai. Periksa detail sebelum ekspor.");
   }catch(error){
@@ -275,6 +307,7 @@ async function removeBackground({autoRefine=false,model="ormbg"}={}){
     state.baseMask.getContext("2d").drawImage(mask,0,0);
     $("hairMattingButton").disabled=false;
     await applyEdgeCleanup();
+    await sharpenHairEdgeMatte();
     await decontaminateEdgeColors();
     brush.style.pointerEvents="auto";
     render();
@@ -305,12 +338,12 @@ function makeExportCanvas(forJpg){const c=createCanvas(state.width,state.height)
 async function exportPng(){if(!state.source||state.busy)return;try{downloadBlob(await canvasBlob(makeExportCanvas(false),"image/png"),state.fileName+"-rebag.png");toast("PNG berhasil dibuat pada resolusi asli.")}catch(e){toast(e.message)}}
 async function exportJpg(){if(!state.source||state.busy)return;try{downloadBlob(await canvasBlob(makeExportCanvas(true),"image/jpeg",.95),state.fileName+"-rebag.jpg");toast("JPG kualitas 95% berhasil dibuat.")}catch(e){toast(e.message)}}
 async function exportPdf(){if(!state.source||state.busy)return;const button=$("exportPdf");button.disabled=true;button.textContent="Menyiapkan…";try{const {jsPDF}=await import("https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm"),canvas=makeExportCanvas(false),data=canvas.toDataURL("image/png"),dpi=300,pageWidth=state.width*72/dpi,pageHeight=state.height*72/dpi,orientation=pageWidth>pageHeight?"landscape":"portrait";const pdf=new jsPDF({orientation,unit:"pt",format:[pageWidth,pageHeight],compress:true});pdf.addImage(data,"PNG",0,0,pageWidth,pageHeight,undefined,"FAST");pdf.save(state.fileName+"-rebag.pdf");toast("PDF satu foto satu halaman berhasil dibuat.")}catch(e){console.error(e);toast("PDF gagal dibuat: "+(e.message||"coba lagi."))}finally{button.textContent="Unduh";enableExports()}}
-async function resetMask(){if(!state.baseMask)return;state.mask=createCanvas(state.width,state.height);state.mask.getContext("2d").drawImage(state.baseMask,0,0);await applyEdgeCleanup();await decontaminateEdgeColors();render();toast("Mask AI dipulihkan dengan koreksi tepi saat ini.")}
+async function resetMask(){if(!state.baseMask)return;state.mask=createCanvas(state.width,state.height);state.mask.getContext("2d").drawImage(state.baseMask,0,0);await applyEdgeCleanup();await sharpenHairEdgeMatte();await sharpenHairEdgeMatte();await sharpenHairEdgeMatte();await decontaminateEdgeColors();render();toast("Mask AI dipulihkan dengan koreksi tepi saat ini.")}
 function getCanvasPoint(event){const r=brush.getBoundingClientRect();return{x:(event.clientX-r.left)*state.width/r.width,y:(event.clientY-r.top)*state.height/r.height}}
 function paintStroke(point){if(!state.mask||!state.baseMask)return;const ctx=state.mask.getContext("2d"),scale=state.width/brush.getBoundingClientRect().width,radius=state.brushSize*scale/2;ctx.save();ctx.lineCap="round";ctx.lineJoin="round";ctx.lineWidth=radius*2;if(state.mode==="erase"){ctx.globalCompositeOperation="destination-out";ctx.strokeStyle="rgba(0,0,0,1)";ctx.beginPath();if(state.lastPoint){ctx.moveTo(state.lastPoint.x,state.lastPoint.y);ctx.lineTo(point.x,point.y)}else{ctx.moveTo(point.x,point.y);ctx.lineTo(point.x+.01,point.y)}ctx.stroke()}else{const path=new Path2D();const from=state.lastPoint||point,dx=point.x-from.x,dy=point.y-from.y,dist=Math.hypot(dx,dy),steps=Math.max(1,Math.ceil(dist/Math.max(1,radius*.45)));for(let i=0;i<=steps;i++){const x=from.x+dx*i/steps,y=from.y+dy*i/steps;path.moveTo(x+radius,y);path.arc(x,y,radius,0,Math.PI*2)}ctx.beginPath();ctx.clip(path);ctx.globalCompositeOperation="source-over";ctx.drawImage(state.baseMask,0,0)}ctx.restore()}
 function onBrushDown(e){if(!state.mask)return;state.pointerDown=true;brush.setPointerCapture(e.pointerId);state.lastPoint=null;const p=getCanvasPoint(e);paintStroke(p);state.lastPoint=p;render()}
 function onBrushMove(e){if(!state.pointerDown)return;const p=getCanvasPoint(e);paintStroke(p);state.lastPoint=p;render()}
-async function onBrushUp(){state.pointerDown=false;state.lastPoint=null;if(state.mask){await decontaminateEdgeColors();render()}}
+async function onBrushUp(){state.pointerDown=false;state.lastPoint=null;if(state.mask){await sharpenHairEdgeMatte();await decontaminateEdgeColors();render()}}
 async function loadMainPhoto(file){if(!file||!/^image\/(jpeg|png|webp)$/.test(file.type)){toast("Pilih foto JPG, PNG, atau WebP.");return}try{const loaded=await imageFromFile(file);if(state.sourceUrl)URL.revokeObjectURL(state.sourceUrl);state.source=loaded.img;state.sourceUrl=loaded.url;state.width=loaded.img.naturalWidth;state.height=loaded.img.naturalHeight;state.fileName=(file.name||"rebag-photo").replace(/\.[^.]+$/,"").replace(/[^\w-]+/g,"-");state.mask=null;state.baseMask=null;state.cleanedSource=null;$("hairMattingButton").disabled=true;$("fileMeta").textContent=file.name+" • "+state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent="Foto siap diedit";showEditor();toast("Foto diunggah. AI menghapus background; perapian rambut lanjutan tersedia lewat tombol manual.");await removeBackground()}catch(e){toast(e.message)}}
 $("photoInput").addEventListener("change",e=>loadMainPhoto(e.target.files[0]));
 $("dropzone").addEventListener("dragover",e=>{e.preventDefault();$("dropzone").classList.add("dragover")});
@@ -323,7 +356,7 @@ bindLivePicker($("saturationPicker"),"saturation");bindLivePicker($("huePicker")
 $("backgroundInput").addEventListener("change",async e=>{const file=e.target.files[0];if(!file)return;try{const loaded=await imageFromFile(file);state.backgroundImage=loaded.img;$("backgroundImageMeta").textContent="Background: "+file.name;setBackground(loaded.img);toast("Background gambar berhasil diterapkan.")}catch(err){toast(err.message)}});
 $("eraseMode").addEventListener("click",()=>{state.mode="erase";$("eraseMode").classList.add("active");$("restoreMode").classList.remove("active")});
 $("restoreMode").addEventListener("click",()=>{state.mode="restore";$("restoreMode").classList.add("active");$("eraseMode").classList.remove("active")});
-$("brushSize").addEventListener("input",e=>{state.brushSize=Number(e.target.value);$("brushValue").textContent=state.brushSize+" px"});let edgeTuneTimer=null;function scheduleEdgeTune(){clearTimeout(edgeTuneTimer);edgeTuneTimer=setTimeout(async()=>{if(!state.baseMask)return;state.mask=createCanvas(state.width,state.height);state.mask.getContext("2d").drawImage(state.baseMask,0,0);await applyEdgeCleanup();await decontaminateEdgeColors();render()},180)}$("edgeCleanup").addEventListener("input",e=>{state.edgeCleanup=Number(e.target.value);$("edgeCleanupValue").textContent=state.edgeCleanup+"%";scheduleEdgeTune()});$("decontaminate").addEventListener("input",e=>{state.decontaminate=Number(e.target.value);$("decontaminateValue").textContent=state.decontaminate+"%";scheduleEdgeTune()});
+$("brushSize").addEventListener("input",e=>{state.brushSize=Number(e.target.value);$("brushValue").textContent=state.brushSize+" px"});let edgeTuneTimer=null;function scheduleEdgeTune(){clearTimeout(edgeTuneTimer);edgeTuneTimer=setTimeout(async()=>{if(!state.baseMask)return;state.mask=createCanvas(state.width,state.height);state.mask.getContext("2d").drawImage(state.baseMask,0,0);await applyEdgeCleanup();await sharpenHairEdgeMatte();await sharpenHairEdgeMatte();await decontaminateEdgeColors();render()},180)}$("edgeCleanup").addEventListener("input",e=>{state.edgeCleanup=Number(e.target.value);$("edgeCleanupValue").textContent=state.edgeCleanup+"%";scheduleEdgeTune()});$("decontaminate").addEventListener("input",e=>{state.decontaminate=Number(e.target.value);$("decontaminateValue").textContent=state.decontaminate+"%";scheduleEdgeTune()});
 $("hairMattingButton").addEventListener("click",refineHairMatting);$("resetMask").addEventListener("click",resetMask);
 brush.addEventListener("pointerdown",onBrushDown);brush.addEventListener("pointermove",onBrushMove);brush.addEventListener("pointerup",onBrushUp);brush.addEventListener("pointercancel",onBrushUp);
 $("exportPng").addEventListener("click",exportPng);$("exportJpg").addEventListener("click",exportJpg);$("exportPdf").addEventListener("click",exportPdf);
