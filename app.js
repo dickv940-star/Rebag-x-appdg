@@ -17,11 +17,16 @@ function composeFinalCanvas({forJpg=false}={}){
   ctx.drawImage(buildSubjectCanvas(),0,0);
   return canvas;
 }
+let renderQueued=false;
 function render(){
-  if(!state.source)return;
-  previewCtx.clearRect(0,0,preview.width,preview.height);
-  // Preview and downloads share the exact same compositing function.
-  previewCtx.drawImage(composeFinalCanvas(),0,0);
+  if(!state.source||renderQueued)return;
+  renderQueued=true;
+  requestAnimationFrame(()=>{
+    renderQueued=false;
+    previewCtx.clearRect(0,0,preview.width,preview.height);
+    // Preview and downloads share the exact same compositing function.
+    previewCtx.drawImage(composeFinalCanvas(),0,0);
+  });
 }
 function showEditor(){if(!state.source)return;$("removeButton").disabled=state.busy;$("emptyState").hidden=true;preview.width=brush.width=state.width;preview.height=brush.height=state.height;preview.classList.add("visible");brush.classList.add("visible");brush.style.pointerEvents=state.mask?"auto":"none";brushCtx.clearRect(0,0,brush.width,brush.height);render();$("dimensions").textContent=state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent=state.mask?"Background terhapus":"Foto asli";$("zoomLabel").textContent="Rasio dan resolusi asli";$("resetMask").disabled=!state.mask;enableExports()}
 function enableExports(){["exportPng","exportJpg","exportPdf"].forEach(id=>$(id).disabled=!state.source||state.busy)}
@@ -145,14 +150,17 @@ async function decontaminateEdgeColors(){
   // Sample only the nearest transparent pixel along short rays; median sampling
   // rejects foreground details accidentally encountered through small gaps.
   const directions=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
-  const maxRadius=Math.min(32,Math.max(8,Math.round(Math.max(width,height)*.006)));
+  // Keep the edge search deliberately local. A wide ray search per pixel
+  // becomes quadratic-feeling work on large portraits and can freeze the tab.
+  const maxRadius=8;
   const samplesR=[],samplesG=[],samplesB=[];
   const median=arr=>{arr.sort((a,b)=>a-b);return arr[arr.length>>1]};
   for(let y=0;y<height;y++){
-    if((y&7)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
+    // Yield every row so input, paint and browser rendering remain responsive.
+    await new Promise(resolve=>requestAnimationFrame(resolve));
     for(let x=0,i=(y*width)*4;x<width;x++,i+=4){
       const a=alpha[i+3]/255;
-      if(a<.018||a>.985)continue;
+      if(a<.025||a>.90)continue;
       samplesR.length=samplesG.length=samplesB.length=0;
       for(const [dx,dy] of directions){
         for(let radius=1;radius<=maxRadius;radius++){
@@ -167,15 +175,12 @@ async function decontaminateEdgeColors(){
       }
       if(samplesR.length<3)continue;
       const br=median(samplesR),bg=median(samplesG),bb=median(samplesB);
-      // Inverse alpha compositing estimates the uncontaminated foreground RGB.
-      // A denominator floor limits noise amplification on very soft hair pixels.
-      const denom=Math.max(.06,a);
+      const denom=Math.max(.10,a);
       const fr=Math.max(0,Math.min(255,(src[i]-(1-a)*br)/denom));
       const fg=Math.max(0,Math.min(255,(src[i+1]-(1-a)*bg)/denom));
       const fb=Math.max(0,Math.min(255,(src[i+2]-(1-a)*bb)/denom));
       const confidence=Math.min(1,samplesR.length/5);
-      const alphaSafety=Math.min(1,Math.max(.90,a/.06));
-      const correction=Math.min(.995,strength*confidence*alphaSafety);
+      const correction=Math.min(.92,strength*confidence*Math.min(1,a/.12));
       src[i]=Math.round(src[i]+(fr-src[i])*correction);
       src[i+1]=Math.round(src[i+1]+(fg-src[i+1])*correction);
       src[i+2]=Math.round(src[i+2]+(fb-src[i+2])*correction);
