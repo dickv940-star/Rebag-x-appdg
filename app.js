@@ -10,7 +10,19 @@ function imageFromFile(file){return new Promise((resolve,reject)=>{const url=URL
 function createCanvas(width,height){const c=document.createElement("canvas");c.width=width;c.height=height;return c}
 function buildSubjectCanvas(){const c=createCanvas(state.width,state.height),ctx=c.getContext("2d");ctx.drawImage(state.cleanedSource||state.source,0,0,state.width,state.height);if(state.mask){ctx.globalCompositeOperation="destination-in";ctx.drawImage(state.mask,0,0)}return c}
 function drawBackground(ctx){if(state.background==="transparent")return;if(state.background instanceof HTMLImageElement){const bg=state.background,scale=Math.max(state.width/bg.naturalWidth,state.height/bg.naturalHeight),w=bg.naturalWidth*scale,h=bg.naturalHeight*scale;ctx.drawImage(bg,(state.width-w)/2,(state.height-h)/2,w,h)}else{ctx.fillStyle=state.background;ctx.fillRect(0,0,state.width,state.height)}}
-function render(){if(!state.source)return;previewCtx.clearRect(0,0,preview.width,preview.height);drawBackground(previewCtx);previewCtx.drawImage(buildSubjectCanvas(),0,0)}
+function composeFinalCanvas({forJpg=false}={}){
+  const canvas=createCanvas(state.width,state.height),ctx=canvas.getContext("2d");
+  if(forJpg&&state.background==="transparent"){ctx.fillStyle="#fff";ctx.fillRect(0,0,state.width,state.height)}
+  else drawBackground(ctx);
+  ctx.drawImage(buildSubjectCanvas(),0,0);
+  return canvas;
+}
+function render(){
+  if(!state.source)return;
+  previewCtx.clearRect(0,0,preview.width,preview.height);
+  // Preview and downloads share the exact same compositing function.
+  previewCtx.drawImage(composeFinalCanvas(),0,0);
+}
 function showEditor(){if(!state.source)return;$("removeButton").disabled=state.busy;$("emptyState").hidden=true;preview.width=brush.width=state.width;preview.height=brush.height=state.height;preview.classList.add("visible");brush.classList.add("visible");brush.style.pointerEvents=state.mask?"auto":"none";brushCtx.clearRect(0,0,brush.width,brush.height);render();$("dimensions").textContent=state.width.toLocaleString("id-ID")+" × "+state.height.toLocaleString("id-ID")+" px";$("previewStatus").textContent=state.mask?"Background terhapus":"Foto asli";$("zoomLabel").textContent="Rasio dan resolusi asli";$("resetMask").disabled=!state.mask;enableExports()}
 function enableExports(){["exportPng","exportJpg","exportPdf"].forEach(id=>$(id).disabled=!state.source||state.busy)}
 async function applyEdgeCleanup(){
@@ -29,7 +41,9 @@ async function applyEdgeCleanup(){
     for(let x=0,i=rowStart;x<width;x++,i+=4){
       const alpha=originalAlpha[y*width+x]/255;
       if(alpha<=0.008){pixels[i+3]=0;continue}
-      if(effectiveStrength===0)continue;
+      // Keep confidently detected subject pixels untouched (eyes, skin, clothing,
+      // and other interior details must not be treated as background edges).
+      if(alpha>=.92||effectiveStrength===0)continue;
       let normalized=Math.pow(Math.max(0,Math.min(1,(alpha-cutoff)/(1-cutoff))),exponent);
       // Spend neighborhood work only on translucent edge pixels.
       if(alpha<.22){
@@ -62,7 +76,8 @@ async function naturalizeHairMatte(){
     if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
     for(let x=0;x<width;x++){
       const p=y*width+x,i=p*4,a=alpha[p]/255;
-      if(a<.025||a>.975)continue;
+      // Never smooth fully opaque interior pixels; preserve eyes and facial detail.
+      if(a<.025||a>.94)continue;
       let sum=0,weight=0;
       for(let dy=-1;dy<=1;dy++){
         const yy=y+dy;if(yy<0||yy>=height)continue;
@@ -96,7 +111,8 @@ async function sharpenHairEdgeMatte(){
     if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
     for(let x=0;x<width;x++){
       const p=y*width+x,i=y*stride+x*4,a=alpha[p]/255;
-      if(a<=.015||a>=.985)continue;
+      // Sharpen only the uncertain silhouette, not opaque facial/body pixels.
+      if(a<=.015||a>=.94)continue;
       let sum=0,weight=0;
       for(let dy=-1;dy<=1;dy++){
         const yy=y+dy;if(yy<0||yy>=height)continue;
@@ -211,12 +227,18 @@ async function refineHairMatting({automatic=false}={}){
         const modnetAlpha=Math.max(0,Math.min(255,value));
         const baseAlpha=base[i+3];
         let fusedAlpha;
-        if(baseAlpha<=6){
-          // Reject weak background predictions while retaining confident fine hair.
-          fusedAlpha=modnetAlpha>=35?Math.round(modnetAlpha*.72):0;
+        if(baseAlpha>=238){
+          // ORMBG is already confident: preserve eyes, skin, clothing and details.
+          fusedAlpha=baseAlpha;
+        }else if(baseAlpha>=190){
+          // On likely subject pixels, use MODNet only as a gentle correction.
+          fusedAlpha=Math.round(baseAlpha*.88+modnetAlpha*.12);
+        }else if(baseAlpha<=6){
+          // Recover only reasonably confident fine hair from the second model.
+          fusedAlpha=modnetAlpha>=45?Math.round(modnetAlpha*.68):0;
         }else{
-          // Let MODNet soften hard segmentation edges as well as recover hair strands.
-          fusedAlpha=Math.round(baseAlpha*.28+modnetAlpha*.72);
+          // Blend models mainly around uncertain silhouette pixels.
+          fusedAlpha=Math.round(baseAlpha*.55+modnetAlpha*.45);
         }
         out[i]=out[i+1]=out[i+2]=255;
         out[i+3]=Math.max(0,Math.min(255,fusedAlpha));
@@ -368,7 +390,7 @@ function bindLivePicker(element,kind){element.addEventListener("pointerenter",e=
 
 function downloadBlob(blob,name){if(!(blob instanceof Blob)||blob.size===0)throw new Error("File PNG kosong atau gagal dibuat.");const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;a.style.display="none";a.rel="noopener";document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000)}
 function canvasBlob(canvas,type,quality){return new Promise((resolve,reject)=>canvas.toBlob(blob=>blob?resolve(blob):reject(new Error("Gagal membuat file ekspor.")),type,quality))}
-function makeExportCanvas(forJpg){const c=createCanvas(state.width,state.height),ctx=c.getContext("2d");if(forJpg&&state.background==="transparent"){ctx.fillStyle="#fff";ctx.fillRect(0,0,state.width,state.height)}else drawBackground(ctx);ctx.drawImage(buildSubjectCanvas(),0,0);return c}
+function makeExportCanvas(forJpg){return composeFinalCanvas({forJpg})}
 async function exportPng(){if(!state.source||state.busy)return;try{downloadBlob(await canvasBlob(makeExportCanvas(false),"image/png"),state.fileName+"-rebag.png");toast("PNG berhasil dibuat pada resolusi asli.")}catch(e){toast(e.message)}}
 async function exportJpg(){if(!state.source||state.busy)return;try{downloadBlob(await canvasBlob(makeExportCanvas(true),"image/jpeg",.95),state.fileName+"-rebag.jpg");toast("JPG kualitas 95% berhasil dibuat.")}catch(e){toast(e.message)}}
 async function exportPdf(){if(!state.source||state.busy)return;const button=$("exportPdf");button.disabled=true;button.textContent="Menyiapkan…";try{const {jsPDF}=await import("https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm"),canvas=makeExportCanvas(false),data=canvas.toDataURL("image/png"),dpi=300,pageWidth=state.width*72/dpi,pageHeight=state.height*72/dpi,orientation=pageWidth>pageHeight?"landscape":"portrait";const pdf=new jsPDF({orientation,unit:"pt",format:[pageWidth,pageHeight],compress:true});pdf.addImage(data,"PNG",0,0,pageWidth,pageHeight,undefined,"FAST");pdf.save(state.fileName+"-rebag.pdf");toast("PDF satu foto satu halaman berhasil dibuat.")}catch(e){console.error(e);toast("PDF gagal dibuat: "+(e.message||"coba lagi."))}finally{button.textContent="Unduh";enableExports()}}
