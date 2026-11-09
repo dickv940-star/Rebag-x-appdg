@@ -53,50 +53,48 @@ async function applyEdgeCleanup(){
 async function decontaminateEdgeColors(){
   if(!state.source||!state.mask)return;
   const width=state.width,height=state.height;
-  const sourceCanvas=createCanvas(width,height),ctx=sourceCanvas.getContext("2d",{willReadFrequently:true});
+  const sourceCanvas=createCanvas(width,height);
+  const ctx=sourceCanvas.getContext("2d",{willReadFrequently:true});
   ctx.drawImage(state.source,0,0,width,height);
   const image=ctx.getImageData(0,0,width,height);
   const alpha=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height).data;
   const src=image.data,strength=state.decontaminate/100;
   if(strength<=0){state.cleanedSource=sourceCanvas;return}
-  // Estimate the old background independently in each direction. Unlike fixed-radius
-  // sampling, ray sampling finds the nearest truly transparent source pixel even when
-  // the silhouette is irregular or the hair is only a few pixels wide.
+  // Remove the original background color from semi-transparent edge pixels.
+  // Sample only the nearest transparent pixel along short rays; median sampling
+  // rejects foreground details accidentally encountered through small gaps.
   const directions=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
-  const maxRadius=24,limit=Math.min(width,height);
-  if(limit<3){state.cleanedSource=sourceCanvas;return}
+  const maxRadius=Math.min(32,Math.max(8,Math.round(Math.max(width,height)*.006)));
   const samplesR=[],samplesG=[],samplesB=[];
   const median=arr=>{arr.sort((a,b)=>a-b);return arr[arr.length>>1]};
   for(let y=0;y<height;y++){
     if((y&7)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
     for(let x=0,i=(y*width)*4;x<width;x++,i+=4){
       const a=alpha[i+3]/255;
-      if(a<.012||a>.992)continue;
+      if(a<.018||a>.985)continue;
       samplesR.length=samplesG.length=samplesB.length=0;
       for(const [dx,dy] of directions){
         for(let radius=1;radius<=maxRadius;radius++){
           const sx=x+dx*radius,sy=y+dy*radius;
           if(sx<0||sx>=width||sy<0||sy>=height)break;
           const si=(sy*width+sx)*4;
-          if(alpha[si+3]<=8){
+          if(alpha[si+3]<=10){
             samplesR.push(src[si]);samplesG.push(src[si+1]);samplesB.push(src[si+2]);
             break;
           }
         }
       }
-      // Require several independent directions to avoid sampling through a gap
-      // into foreground/background details and introducing a new color cast.
       if(samplesR.length<3)continue;
       const br=median(samplesR),bg=median(samplesG),bb=median(samplesB);
-      const denom=Math.max(.045,a);
+      // Inverse alpha compositing estimates the uncontaminated foreground RGB.
+      // A denominator floor limits noise amplification on very soft hair pixels.
+      const denom=Math.max(.08,a);
       const fr=Math.max(0,Math.min(255,(src[i]-(1-a)*br)/denom));
       const fg=Math.max(0,Math.min(255,(src[i+1]-(1-a)*bg)/denom));
       const fb=Math.max(0,Math.min(255,(src[i+2]-(1-a)*bb)/denom));
-      const confidence=Math.min(1,samplesR.length/6);
-      // Keep correction deliberately softer for nearly transparent strands, where
-      // inverse compositing amplifies sensor noise and JPEG artifacts.
-      const alphaSafety=Math.min(1,Math.max(.42,a/.10));
-      const correction=Math.min(.92,strength*confidence*alphaSafety);
+      const confidence=Math.min(1,samplesR.length/5);
+      const alphaSafety=Math.min(1,Math.max(.68,a/.08));
+      const correction=Math.min(.98,strength*confidence*alphaSafety);
       src[i]=Math.round(src[i]+(fr-src[i])*correction);
       src[i+1]=Math.round(src[i+1]+(fg-src[i+1])*correction);
       src[i+2]=Math.round(src[i+2]+(fb-src[i+2])*correction);
