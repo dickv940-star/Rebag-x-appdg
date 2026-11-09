@@ -41,7 +41,7 @@ async function applyEdgeCleanup(){
   const effectiveStrength=state.currentModel==="ben2"?strength*.25:strength;
   const cutoff=0.012+effectiveStrength*0.075,exponent=1+effectiveStrength*.42;
   for(let y=0;y<height;y++){
-    if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
+    await new Promise(resolve=>requestAnimationFrame(resolve));
     const rowStart=y*rowStride;
     for(let x=0,i=rowStart;x<width;x++,i+=4){
       const alpha=originalAlpha[y*width+x]/255;
@@ -78,7 +78,7 @@ async function naturalizeHairMatte(){
   // Very light edge-aware smoothing: reduce stair-stepping while retaining
   // isolated semi-transparent hair strands and the original silhouette.
   for(let y=0;y<height;y++){
-    if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
+    await new Promise(resolve=>requestAnimationFrame(resolve));
     for(let x=0;x<width;x++){
       const p=y*width+x,i=p*4,a=alpha[p]/255;
       // Never smooth fully opaque interior pixels; preserve eyes and facial detail.
@@ -113,7 +113,7 @@ async function sharpenHairEdgeMatte(){
   // Gentle alpha unsharp-mask: crispens the silhouette and fine strands
   // without sharpening RGB noise or adding a bright outline.
   for(let y=0;y<height;y++){
-    if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
+    await new Promise(resolve=>requestAnimationFrame(resolve));
     for(let x=0;x<width;x++){
       const p=y*width+x,i=y*stride+x*4,a=alpha[p]/255;
       // Sharpen only the uncertain silhouette, not opaque facial/body pixels.
@@ -222,7 +222,7 @@ async function refineHairMatting({automatic=false}={}){
     // and let MODNet refine only the uncertain silhouette and fine hair.
     const channels=matte.channels;
     for(let y=0;y<state.height;y++){
-      if((y&7)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
+      await new Promise(resolve=>requestAnimationFrame(resolve));
       const my=Math.min(matte.height-1,Math.floor(y*matte.height/state.height));
       for(let x=0,i=(y*state.width)*4;x<state.width;x++,i+=4){
         const mx=Math.min(matte.width-1,Math.floor(x*matte.width/state.width));
