@@ -1,6 +1,6 @@
 import { pipeline, env, AutoModel, AutoProcessor, RawImage } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2";
 const $ = id => document.getElementById(id);
-const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,edgeCleanup:42,decontaminate:100,cleanedSource:null,remover:null,ben2Remover:null,currentModel:"ormbg",mattingModel:null,mattingProcessor:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
+const state={source:null,sourceUrl:null,fileName:"rebag-photo",width:0,height:0,mask:null,baseMask:null,background:"transparent",backgroundImage:null,mode:"erase",brushSize:32,edgeCleanup:28,decontaminate:100,cleanedSource:null,remover:null,ben2Remover:null,currentModel:"ormbg",mattingModel:null,mattingProcessor:null,modelLoading:false,busy:false,pointerDown:false,lastPoint:null};
 const preview=$("previewCanvas"),brush=$("brushCanvas"),previewCtx=preview.getContext("2d",{willReadFrequently:true}),brushCtx=brush.getContext("2d"),toastEl=$("toast");
 function toast(message){toastEl.textContent=message;toastEl.classList.add("show");clearTimeout(toast._timer);toast._timer=setTimeout(()=>toastEl.classList.remove("show"),3200)}
 function setBusy(busy,label){state.busy=busy;$("removeButton").disabled=busy||!state.source;$("ben2Button").disabled=busy||!state.source;$("removeButton").textContent=busy?(label||"Memproses…"):"✦ Hapus background otomatis"}
@@ -50,6 +50,39 @@ async function applyEdgeCleanup(){
   }
   target.putImageData(source,0,0);
 }
+async function naturalizeHairMatte(){
+  if(!state.mask)return;
+  const ctx=state.mask.getContext("2d",{willReadFrequently:true});
+  const image=ctx.getImageData(0,0,state.width,state.height),data=image.data;
+  const width=state.width,height=state.height,alpha=new Uint8ClampedArray(width*height);
+  for(let p=0,j=3;p<alpha.length;p++,j+=4)alpha[p]=data[j];
+  // Very light edge-aware smoothing: reduce stair-stepping while retaining
+  // isolated semi-transparent hair strands and the original silhouette.
+  for(let y=0;y<height;y++){
+    if((y&15)===0)await new Promise(resolve=>requestAnimationFrame(resolve));
+    for(let x=0;x<width;x++){
+      const p=y*width+x,i=p*4,a=alpha[p]/255;
+      if(a<.025||a>.975)continue;
+      let sum=0,weight=0;
+      for(let dy=-1;dy<=1;dy++){
+        const yy=y+dy;if(yy<0||yy>=height)continue;
+        for(let dx=-1;dx<=1;dx++){
+          const xx=x+dx;if(xx<0||xx>=width)continue;
+          const neighbor=alpha[yy*width+xx]/255,diff=Math.abs(neighbor-a);
+          const spatial=(dx===0?2:1)*(dy===0?2:1);
+          const w=spatial*Math.exp(-diff*diff/0.018);
+          sum+=neighbor*w;weight+=w;
+        }
+      }
+      if(weight>0){
+        const smooth=sum/weight;
+        const blend=Math.min(.22,Math.abs(a-smooth)*.35+.06);
+        data[i+3]=Math.round((a*(1-blend)+smooth*blend)*255);
+      }
+    }
+  }
+  ctx.putImageData(image,0,0);
+}
 async function sharpenHairEdgeMatte(){
   if(!state.mask)return;
   const canvas=state.mask,ctx=canvas.getContext("2d",{willReadFrequently:true});
@@ -76,7 +109,7 @@ async function sharpenHairEdgeMatte(){
       const local=sum/weight;
       // Stronger only on actual transitions; soft hair transparency is retained.
       const edge=Math.min(1,Math.abs(a-local)*3.2+.12);
-      const sharpened=Math.max(0,Math.min(1,a+(a-local)*.72*edge));
+      const sharpened=Math.max(0,Math.min(1,a+(a-local)*.45*edge));
       data[i+3]=Math.round(sharpened*255);
     }
   }
@@ -192,7 +225,7 @@ async function refineHairMatting({automatic=false}={}){
     ctx.putImageData(pixels,0,0);
     state.baseMask=refined;state.mask=createCanvas(state.width,state.height);
     state.mask.getContext("2d").drawImage(refined,0,0);
-    await applyEdgeCleanup();await sharpenHairEdgeMatte();await decontaminateEdgeColors();render();
+    await applyEdgeCleanup();await naturalizeHairMatte();await sharpenHairEdgeMatte();await decontaminateEdgeColors();render();
     $("previewStatus").textContent="Matte rambut dan tepi diperhalus";
     toast(automatic?"Penghapusan background dan perapian matte otomatis selesai.":"Perapian matte selesai. Periksa detail sebelum ekspor.");
   }catch(error){
@@ -307,6 +340,7 @@ async function removeBackground({autoRefine=false,model="ormbg"}={}){
     state.baseMask.getContext("2d").drawImage(mask,0,0);
     $("hairMattingButton").disabled=false;
     await applyEdgeCleanup();
+    await naturalizeHairMatte();
     await sharpenHairEdgeMatte();
     await decontaminateEdgeColors();
     brush.style.pointerEvents="auto";
@@ -338,7 +372,7 @@ function makeExportCanvas(forJpg){const c=createCanvas(state.width,state.height)
 async function exportPng(){if(!state.source||state.busy)return;try{downloadBlob(await canvasBlob(makeExportCanvas(false),"image/png"),state.fileName+"-rebag.png");toast("PNG berhasil dibuat pada resolusi asli.")}catch(e){toast(e.message)}}
 async function exportJpg(){if(!state.source||state.busy)return;try{downloadBlob(await canvasBlob(makeExportCanvas(true),"image/jpeg",.95),state.fileName+"-rebag.jpg");toast("JPG kualitas 95% berhasil dibuat.")}catch(e){toast(e.message)}}
 async function exportPdf(){if(!state.source||state.busy)return;const button=$("exportPdf");button.disabled=true;button.textContent="Menyiapkan…";try{const {jsPDF}=await import("https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm"),canvas=makeExportCanvas(false),data=canvas.toDataURL("image/png"),dpi=300,pageWidth=state.width*72/dpi,pageHeight=state.height*72/dpi,orientation=pageWidth>pageHeight?"landscape":"portrait";const pdf=new jsPDF({orientation,unit:"pt",format:[pageWidth,pageHeight],compress:true});pdf.addImage(data,"PNG",0,0,pageWidth,pageHeight,undefined,"FAST");pdf.save(state.fileName+"-rebag.pdf");toast("PDF satu foto satu halaman berhasil dibuat.")}catch(e){console.error(e);toast("PDF gagal dibuat: "+(e.message||"coba lagi."))}finally{button.textContent="Unduh";enableExports()}}
-async function resetMask(){if(!state.baseMask)return;state.mask=createCanvas(state.width,state.height);state.mask.getContext("2d").drawImage(state.baseMask,0,0);await applyEdgeCleanup();await sharpenHairEdgeMatte();await decontaminateEdgeColors();render();toast("Mask AI dipulihkan dengan koreksi tepi saat ini.")}
+async function resetMask(){if(!state.baseMask)return;state.mask=createCanvas(state.width,state.height);state.mask.getContext("2d").drawImage(state.baseMask,0,0);await applyEdgeCleanup();await naturalizeHairMatte();await sharpenHairEdgeMatte();await decontaminateEdgeColors();render();toast("Mask AI dipulihkan dengan koreksi tepi saat ini.")}
 function getCanvasPoint(event){const r=brush.getBoundingClientRect();return{x:(event.clientX-r.left)*state.width/r.width,y:(event.clientY-r.top)*state.height/r.height}}
 function paintStroke(point){if(!state.mask||!state.baseMask)return;const ctx=state.mask.getContext("2d"),scale=state.width/brush.getBoundingClientRect().width,radius=state.brushSize*scale/2;ctx.save();ctx.lineCap="round";ctx.lineJoin="round";ctx.lineWidth=radius*2;if(state.mode==="erase"){ctx.globalCompositeOperation="destination-out";ctx.strokeStyle="rgba(0,0,0,1)";ctx.beginPath();if(state.lastPoint){ctx.moveTo(state.lastPoint.x,state.lastPoint.y);ctx.lineTo(point.x,point.y)}else{ctx.moveTo(point.x,point.y);ctx.lineTo(point.x+.01,point.y)}ctx.stroke()}else{const path=new Path2D();const from=state.lastPoint||point,dx=point.x-from.x,dy=point.y-from.y,dist=Math.hypot(dx,dy),steps=Math.max(1,Math.ceil(dist/Math.max(1,radius*.45)));for(let i=0;i<=steps;i++){const x=from.x+dx*i/steps,y=from.y+dy*i/steps;path.moveTo(x+radius,y);path.arc(x,y,radius,0,Math.PI*2)}ctx.beginPath();ctx.clip(path);ctx.globalCompositeOperation="source-over";ctx.drawImage(state.baseMask,0,0)}ctx.restore()}
 function onBrushDown(e){if(!state.mask)return;state.pointerDown=true;brush.setPointerCapture(e.pointerId);state.lastPoint=null;const p=getCanvasPoint(e);paintStroke(p);state.lastPoint=p;render()}
@@ -356,7 +390,7 @@ bindLivePicker($("saturationPicker"),"saturation");bindLivePicker($("huePicker")
 $("backgroundInput").addEventListener("change",async e=>{const file=e.target.files[0];if(!file)return;try{const loaded=await imageFromFile(file);state.backgroundImage=loaded.img;$("backgroundImageMeta").textContent="Background: "+file.name;setBackground(loaded.img);toast("Background gambar berhasil diterapkan.")}catch(err){toast(err.message)}});
 $("eraseMode").addEventListener("click",()=>{state.mode="erase";$("eraseMode").classList.add("active");$("restoreMode").classList.remove("active")});
 $("restoreMode").addEventListener("click",()=>{state.mode="restore";$("restoreMode").classList.add("active");$("eraseMode").classList.remove("active")});
-$("brushSize").addEventListener("input",e=>{state.brushSize=Number(e.target.value);$("brushValue").textContent=state.brushSize+" px"});let edgeTuneTimer=null;function scheduleEdgeTune(){clearTimeout(edgeTuneTimer);edgeTuneTimer=setTimeout(async()=>{if(!state.baseMask)return;state.mask=createCanvas(state.width,state.height);state.mask.getContext("2d").drawImage(state.baseMask,0,0);await applyEdgeCleanup();await sharpenHairEdgeMatte();await decontaminateEdgeColors();render()},180)}$("edgeCleanup").addEventListener("input",e=>{state.edgeCleanup=Number(e.target.value);$("edgeCleanupValue").textContent=state.edgeCleanup+"%";scheduleEdgeTune()});$("decontaminate").addEventListener("input",e=>{state.decontaminate=Number(e.target.value);$("decontaminateValue").textContent=state.decontaminate+"%";scheduleEdgeTune()});
+$("brushSize").addEventListener("input",e=>{state.brushSize=Number(e.target.value);$("brushValue").textContent=state.brushSize+" px"});let edgeTuneTimer=null;function scheduleEdgeTune(){clearTimeout(edgeTuneTimer);edgeTuneTimer=setTimeout(async()=>{if(!state.baseMask)return;state.mask=createCanvas(state.width,state.height);state.mask.getContext("2d").drawImage(state.baseMask,0,0);await applyEdgeCleanup();await naturalizeHairMatte();await sharpenHairEdgeMatte();await decontaminateEdgeColors();render()},180)}$("edgeCleanup").addEventListener("input",e=>{state.edgeCleanup=Number(e.target.value);$("edgeCleanupValue").textContent=state.edgeCleanup+"%";scheduleEdgeTune()});$("decontaminate").addEventListener("input",e=>{state.decontaminate=Number(e.target.value);$("decontaminateValue").textContent=state.decontaminate+"%";scheduleEdgeTune()});
 $("hairMattingButton").addEventListener("click",refineHairMatting);$("resetMask").addEventListener("click",resetMask);
 brush.addEventListener("pointerdown",onBrushDown);brush.addEventListener("pointermove",onBrushMove);brush.addEventListener("pointerup",onBrushUp);brush.addEventListener("pointercancel",onBrushUp);
 $("exportPng").addEventListener("click",exportPng);$("exportJpg").addEventListener("click",exportJpg);$("exportPdf").addEventListener("click",exportPdf);
