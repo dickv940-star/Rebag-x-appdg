@@ -33,161 +33,97 @@ function enableExports(){["exportPng","exportJpg","exportPdf"].forEach(id=>$(id)
 async function applyEdgeCleanup(){
   if(!state.baseMask||!state.mask)return;
   const source=state.baseMask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,state.width,state.height);
-  const target=state.mask.getContext("2d"),pixels=source.data,strength=state.edgeCleanup/100;
-  const width=state.width,height=state.height,rowStride=width*4;
-  const originalAlpha=new Uint8ClampedArray(width*height);
-  for(let p=0,j=3;p<originalAlpha.length;p++,j+=4)originalAlpha[p]=pixels[j];
-  // BEN2 already returns a soft alpha matte; use gentler cleanup to protect fine strands.
-  const effectiveStrength=state.currentModel==="ben2"?strength*.25:strength;
-  const cutoff=0.012+effectiveStrength*0.075,exponent=1+effectiveStrength*.42;
+  const pixels=source.data,width=state.width,height=state.height,stride=width*4;
+  const alpha=new Uint8Array(width*height);
+  for(let p=0,j=3;p<alpha.length;p++,j+=4)alpha[p]=pixels[j];
+  const strength=state.edgeCleanup/100;
+  const cutoff=0.018+strength*0.105,exponent=1+strength*.55;
   for(let y=0;y<height;y++){
-    await new Promise(resolve=>requestAnimationFrame(resolve));
-    const rowStart=y*rowStride;
-    for(let x=0,i=rowStart;x<width;x++,i+=4){
-      const alpha=originalAlpha[y*width+x]/255;
-      if(alpha<=0.008){pixels[i+3]=0;continue}
-      // Keep confidently detected subject pixels untouched (eyes, skin, clothing,
-      // and other interior details must not be treated as background edges).
-      if(alpha>=.92||effectiveStrength===0)continue;
-      let normalized=Math.pow(Math.max(0,Math.min(1,(alpha-cutoff)/(1-cutoff))),exponent);
-      // Spend neighborhood work only on translucent edge pixels.
-      if(alpha<.22){
-        let nearby=0;
+    if((y&63)===63)await new Promise(resolve=>setTimeout(resolve,0));
+    for(let x=0,i=y*stride;x<width;x++,i+=4){
+      const a=alpha[y*width+x]/255;
+      if(a<=.008){pixels[i+3]=0;continue}
+      if(a>=.94||strength===0)continue;
+      let v=Math.pow(Math.max(0,Math.min(1,(a-cutoff)/(1-cutoff))),exponent);
+      if(a<.20){
+        let near=0;
         for(let dy=-2;dy<=2;dy++){
           const yy=y+dy;if(yy<0||yy>=height)continue;
           for(let dx=-2;dx<=2;dx++){
             const xx=x+dx;if(xx<0||xx>=width)continue;
-            const value=originalAlpha[yy*width+xx]/255;
-            if(value>nearby)nearby=value;
+            const n=alpha[yy*width+xx]/255;if(n>near)near=n;
           }
         }
-        if(alpha<.16&&nearby<.48)normalized*=Math.max(.12,nearby/.48);
-        if(alpha<.045&&nearby<.2)normalized=0;
+        if(a<.15&&near<.42)v*=Math.max(.08,near/.42);
+        if(a<.035&&near<.18)v=0;
       }
-      pixels[i+3]=Math.round(normalized*255);
+      pixels[i+3]=Math.round(v*255);
     }
   }
-  target.putImageData(source,0,0);
+  state.mask.getContext("2d").putImageData(source,0,0);
 }
 async function naturalizeHairMatte(){
   if(!state.mask)return;
   const ctx=state.mask.getContext("2d",{willReadFrequently:true});
   const image=ctx.getImageData(0,0,state.width,state.height),data=image.data;
-  const width=state.width,height=state.height,alpha=new Uint8ClampedArray(width*height);
+  const w=state.width,h=state.height,alpha=new Uint8Array(w*h);
   for(let p=0,j=3;p<alpha.length;p++,j+=4)alpha[p]=data[j];
-  // Very light edge-aware smoothing: reduce stair-stepping while retaining
-  // isolated semi-transparent hair strands and the original silhouette.
-  for(let y=0;y<height;y++){
-    await new Promise(resolve=>requestAnimationFrame(resolve));
-    for(let x=0;x<width;x++){
-      const p=y*width+x,i=p*4,a=alpha[p]/255;
-      // Never smooth fully opaque interior pixels; preserve eyes and facial detail.
-      if(a<.025||a>.94)continue;
-      let sum=0,weight=0;
-      for(let dy=-1;dy<=1;dy++){
-        const yy=y+dy;if(yy<0||yy>=height)continue;
-        for(let dx=-1;dx<=1;dx++){
-          const xx=x+dx;if(xx<0||xx>=width)continue;
-          const neighbor=alpha[yy*width+xx]/255,diff=Math.abs(neighbor-a);
-          const spatial=(dx===0?2:1)*(dy===0?2:1);
-          const w=spatial*Math.exp(-diff*diff/0.018);
-          sum+=neighbor*w;weight+=w;
-        }
-      }
-      if(weight>0){
-        const smooth=sum/weight;
-        const blend=Math.min(.22,Math.abs(a-smooth)*.35+.06);
-        data[i+3]=Math.round((a*(1-blend)+smooth*blend)*255);
-      }
+  // Small 3x3 edge-only smoothing; opaque face/clothing pixels and isolated fine strands remain untouched.
+  for(let y=1;y<h-1;y++){
+    if((y&63)===63)await new Promise(resolve=>setTimeout(resolve,0));
+    for(let x=1;x<w-1;x++){
+      const p=y*w+x,a=alpha[p]/255;
+      if(a<.06||a>.88)continue;
+      const n=(alpha[p-w]+alpha[p+w]+alpha[p-1]+alpha[p+1])/1020;
+      const blend=Math.min(.12,Math.abs(a-n)*.16+.025);
+      data[p*4+3]=Math.round((a*(1-blend)+n*blend)*255);
     }
   }
   ctx.putImageData(image,0,0);
 }
 async function sharpenHairEdgeMatte(){
-  if(!state.mask)return;
-  const canvas=state.mask,ctx=canvas.getContext("2d",{willReadFrequently:true});
-  const image=ctx.getImageData(0,0,state.width,state.height),data=image.data;
-  const width=state.width,height=state.height,stride=width*4;
-  const alpha=new Uint8ClampedArray(width*height);
-  for(let p=0,j=3;p<alpha.length;p++,j+=4)alpha[p]=data[j];
-  // Gentle alpha unsharp-mask: crispens the silhouette and fine strands
-  // without sharpening RGB noise or adding a bright outline.
-  for(let y=0;y<height;y++){
-    await new Promise(resolve=>requestAnimationFrame(resolve));
-    for(let x=0;x<width;x++){
-      const p=y*width+x,i=y*stride+x*4,a=alpha[p]/255;
-      // Sharpen only the uncertain silhouette, not opaque facial/body pixels.
-      if(a<=.015||a>=.94)continue;
-      let sum=0,weight=0;
-      for(let dy=-1;dy<=1;dy++){
-        const yy=y+dy;if(yy<0||yy>=height)continue;
-        for(let dx=-1;dx<=1;dx++){
-          const xx=x+dx;if(xx<0||xx>=width)continue;
-          const w=(dx===0?2:1)*(dy===0?2:1);
-          sum+=(alpha[yy*width+xx]/255)*w;weight+=w;
-        }
-      }
-      const local=sum/weight;
-      // Stronger only on actual transitions; soft hair transparency is retained.
-      const edge=Math.min(1,Math.abs(a-local)*3.2+.12);
-      const sharpened=Math.max(0,Math.min(1,a+(a-local)*.45*edge));
-      data[i+3]=Math.round(sharpened*255);
-    }
-  }
-  ctx.putImageData(image,0,0);
+  // The segmentation model already returns a soft matte. Avoid a second full-resolution
+  // sharpening pass: it costs time and can erase translucent hair strands or create halos.
+  return;
 }
 async function decontaminateEdgeColors(){
   if(!state.source||!state.mask)return;
-  const width=state.width,height=state.height;
-  const sourceCanvas=createCanvas(width,height);
-  const ctx=sourceCanvas.getContext("2d",{willReadFrequently:true});
-  ctx.drawImage(state.source,0,0,width,height);
-  const image=ctx.getImageData(0,0,width,height);
-  const alpha=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,width,height).data;
-  const src=image.data,strength=state.decontaminate/100;
-  if(strength<=0){state.cleanedSource=sourceCanvas;return}
-  // Remove the original background color from semi-transparent edge pixels.
-  // Sample only the nearest transparent pixel along short rays; median sampling
-  // rejects foreground details accidentally encountered through small gaps.
-  const directions=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
-  // Keep the edge search deliberately local. A wide ray search per pixel
-  // becomes quadratic-feeling work on large portraits and can freeze the tab.
-  const maxRadius=8;
-  const samplesR=[],samplesG=[],samplesB=[];
-  const median=arr=>{arr.sort((a,b)=>a-b);return arr[arr.length>>1]};
-  for(let y=0;y<height;y++){
-    // Yield every row so input, paint and browser rendering remain responsive.
-    await new Promise(resolve=>requestAnimationFrame(resolve));
-    for(let x=0,i=(y*width)*4;x<width;x++,i+=4){
+  const w=state.width,h=state.height,strength=state.decontaminate/100;
+  if(strength<=0){state.cleanedSource=null;return}
+  const canvas=createCanvas(w,h),ctx=canvas.getContext("2d",{willReadFrequently:true});
+  ctx.drawImage(state.source,0,0,w,h);
+  const image=ctx.getImageData(0,0,w,h),src=image.data;
+  const alpha=state.mask.getContext("2d",{willReadFrequently:true}).getImageData(0,0,w,h).data;
+  const dirs=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
+  const maxRadius=4,rs=[],gs=[],bs=[];
+  const median=a=>{a.sort((x,y)=>x-y);return a[a.length>>1]};
+  for(let y=0;y<h;y++){
+    if((y&31)===31)await new Promise(resolve=>setTimeout(resolve,0));
+    for(let x=0,i=y*w*4;x<w;x++,i+=4){
       const a=alpha[i+3]/255;
-      if(a<.025||a>.90)continue;
-      samplesR.length=samplesG.length=samplesB.length=0;
-      for(const [dx,dy] of directions){
-        for(let radius=1;radius<=maxRadius;radius++){
-          const sx=x+dx*radius,sy=y+dy*radius;
-          if(sx<0||sx>=width||sy<0||sy>=height)break;
-          const si=(sy*width+sx)*4;
-          if(alpha[si+3]<=10){
-            samplesR.push(src[si]);samplesG.push(src[si+1]);samplesB.push(src[si+2]);
-            break;
-          }
+      if(a<.035||a>.86)continue;
+      rs.length=gs.length=bs.length=0;
+      for(const [dx,dy] of dirs){
+        for(let r=1;r<=maxRadius;r++){
+          const xx=x+dx*r,yy=y+dy*r;
+          if(xx<0||xx>=w||yy<0||yy>=h)break;
+          const q=(yy*w+xx)*4;
+          if(alpha[q+3]<12){rs.push(src[q]);gs.push(src[q+1]);bs.push(src[q+2]);break}
         }
       }
-      if(samplesR.length<3)continue;
-      const br=median(samplesR),bg=median(samplesG),bb=median(samplesB);
-      const denom=Math.max(.10,a);
-      const fr=Math.max(0,Math.min(255,(src[i]-(1-a)*br)/denom));
-      const fg=Math.max(0,Math.min(255,(src[i+1]-(1-a)*bg)/denom));
-      const fb=Math.max(0,Math.min(255,(src[i+2]-(1-a)*bb)/denom));
-      const confidence=Math.min(1,samplesR.length/5);
-      const correction=Math.min(.92,strength*confidence*Math.min(1,a/.12));
-      src[i]=Math.round(src[i]+(fr-src[i])*correction);
-      src[i+1]=Math.round(src[i+1]+(fg-src[i+1])*correction);
-      src[i+2]=Math.round(src[i+2]+(fb-src[i+2])*correction);
+      if(rs.length<3)continue;
+      const br=median(rs),bg=median(gs),bb=median(bs),inv=1/Math.max(.16,a);
+      const fr=Math.max(0,Math.min(255,(src[i]-(1-a)*br)*inv));
+      const fg=Math.max(0,Math.min(255,(src[i+1]-(1-a)*bg)*inv));
+      const fb=Math.max(0,Math.min(255,(src[i+2]-(1-a)*bb)*inv));
+      const confidence=Math.min(1,rs.length/5),mix=Math.min(.88,strength*confidence*Math.min(1,a/.14));
+      src[i]=Math.round(src[i]*(1-mix)+fr*mix);
+      src[i+1]=Math.round(src[i+1]*(1-mix)+fg*mix);
+      src[i+2]=Math.round(src[i+2]*(1-mix)+fb*mix);
     }
   }
   ctx.putImageData(image,0,0);
-  state.cleanedSource=sourceCanvas;
+  state.cleanedSource=canvas;
 }
 async function refineHairMatting({automatic=false}={}){
   if(!state.source||!state.mask||state.busy)return;
@@ -337,7 +273,7 @@ async function removeBackground({autoRefine=false,model="ormbg"}={}){
   try{
     const remover=model==="ben2"?await loadBen2Model():await loadModel();
     setProgress(55,model==="ben2"?"BEN2 menganalisis rambut dan tepian…":"AI sedang mengenali objek…");
-    const maxSide=1024,scale=Math.min(1,maxSide/Math.max(state.width,state.height));
+    const maxSide=1280,scale=Math.min(1,maxSide/Math.max(state.width,state.height));
     const inferenceWidth=Math.max(1,Math.round(state.width*scale)),inferenceHeight=Math.max(1,Math.round(state.height*scale));
     const inferenceCanvas=createCanvas(inferenceWidth,inferenceHeight);
     inferenceCanvas.getContext("2d").drawImage(state.source,0,0,inferenceWidth,inferenceHeight);
